@@ -225,21 +225,20 @@ pub async fn get_track(
     }))
 }
 
-/// DELETE /api/v1/tracks/{id}
+/// DELETE /api/v1/tracks/:id
 ///
-/// Delete track embeddings.
+/// Delete track embeddings. Request body is required to specify which
+/// collections to delete from (text, audio, or both).
 #[cfg(feature = "storage")]
 pub async fn delete_track(
     State(state): State<AppState>,
     Path(track_id): Path<String>,
-    body: Option<MsgPackExtractor<DeleteRequest>>,
+    MsgPackExtractor(req): MsgPackExtractor<DeleteRequest>,
 ) -> Result<MsgPack<DeleteResponse>, AppError> {
     let storage = state
         .storage
         .as_ref()
         .ok_or_else(|| AppError::Internal("Storage not configured".to_string()))?;
-
-    let req = body.map(|b| b.0).unwrap_or_default();
 
     info!(track_id = %track_id, text = req.text, audio = req.audio, "Deleting track embeddings");
 
@@ -326,7 +325,7 @@ pub async fn get_track(
 pub async fn delete_track(
     State(_state): State<AppState>,
     Path(_track_id): Path<String>,
-    _body: Option<MsgPackExtractor<DeleteRequest>>,
+    MsgPackExtractor(_req): MsgPackExtractor<DeleteRequest>,
 ) -> Result<MsgPack<DeleteResponse>, AppError> {
     Err(AppError::Internal(
         "Storage feature not enabled".to_string(),

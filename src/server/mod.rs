@@ -88,7 +88,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/tracks/upsert", post(tracks::upsert))
         .route("/tracks/search", post(tracks::search))
         .route(
-            "/tracks/{id}",
+            "/tracks/:id",
             get(tracks::get_track).delete(tracks::delete_track),
         );
 
