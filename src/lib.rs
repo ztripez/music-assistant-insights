@@ -9,6 +9,7 @@ pub mod error;
 #[cfg(feature = "inference")]
 pub mod inference;
 pub mod server;
+pub mod storage;
 pub mod types;
 
 pub use config::AppConfig;

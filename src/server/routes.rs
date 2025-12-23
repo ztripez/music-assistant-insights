@@ -7,7 +7,7 @@ use axum::{
 };
 
 use crate::types::{
-    AudioInfo, ConfigResponse, HealthResponse, HealthStatus, ModelInfo, ServerInfo,
+    AudioInfo, ConfigResponse, HealthResponse, HealthStatus, ModelInfo, ServerInfo, StorageInfo,
 };
 
 use super::AppState;
@@ -44,6 +44,11 @@ pub async fn health(State(_state): State<AppState>) -> MsgPack<HealthResponse> {
     #[cfg(not(feature = "inference"))]
     let model_loaded = false;
 
+    #[cfg(feature = "storage")]
+    let storage_ready = _state.storage.is_some();
+    #[cfg(not(feature = "storage"))]
+    let storage_ready = false;
+
     // Degraded if inference feature enabled but model not loaded
     #[cfg(feature = "inference")]
     let status = if model_loaded {
@@ -58,6 +63,7 @@ pub async fn health(State(_state): State<AppState>) -> MsgPack<HealthResponse> {
         status,
         version: VERSION.to_string(),
         model_loaded,
+        storage_ready,
     })
 }
 
@@ -76,6 +82,11 @@ pub async fn config(State(state): State<AppState>) -> MsgPack<ConfigResponse> {
     #[cfg(not(feature = "inference"))]
     let (loaded, device) = (false, None);
 
+    #[cfg(feature = "storage")]
+    let storage_connected = state.storage.is_some();
+    #[cfg(not(feature = "storage"))]
+    let storage_connected = false;
+
     MsgPack(ConfigResponse {
         model: ModelInfo {
             name: config.model.name.clone(),
@@ -90,6 +101,11 @@ pub async fn config(State(state): State<AppState>) -> MsgPack<ConfigResponse> {
         server: ServerInfo {
             host: config.server.host.clone(),
             port: config.server.port,
+        },
+        storage: StorageInfo {
+            url: config.storage.url.clone(),
+            enabled: config.storage.enabled,
+            connected: storage_connected,
         },
     })
 }

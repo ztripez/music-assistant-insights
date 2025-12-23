@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 pub struct HealthResponse {
     pub status: HealthStatus,
     pub version: String,
+    #[serde(default)]
     pub model_loaded: bool,
+    #[serde(default)]
+    pub storage_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +30,7 @@ pub struct ConfigResponse {
     pub model: ModelInfo,
     pub audio: AudioInfo,
     pub server: ServerInfo,
+    pub storage: StorageInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,4 +51,11 @@ pub struct AudioInfo {
 pub struct ServerInfo {
     pub host: String,
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageInfo {
+    pub url: String,
+    pub enabled: bool,
+    pub connected: bool,
 }

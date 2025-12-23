@@ -37,6 +37,9 @@ config = "0.14"
 thiserror = "1"
 anyhow = "1"
 
+# Async trait support
+async-trait = "0.1"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -58,7 +61,7 @@ qdrant-client = { version = "1", optional = true }
 symphonia = { version = "0.5", features = ["all"], optional = true }
 
 # Utilities
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 bytes = "1"
 
 [dev-dependencies]
