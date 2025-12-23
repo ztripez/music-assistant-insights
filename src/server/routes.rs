@@ -38,10 +38,26 @@ impl<T: serde::Serialize> IntoResponse for MsgPack<T> {
 /// Health check endpoint
 ///
 /// GET /api/v1/health
-pub async fn health() -> MsgPack<HealthResponse> {
+pub async fn health(State(_state): State<AppState>) -> MsgPack<HealthResponse> {
+    #[cfg(feature = "inference")]
+    let model_loaded = _state.model.is_some();
+    #[cfg(not(feature = "inference"))]
+    let model_loaded = false;
+
+    // Degraded if inference feature enabled but model not loaded
+    #[cfg(feature = "inference")]
+    let status = if model_loaded {
+        HealthStatus::Healthy
+    } else {
+        HealthStatus::Degraded
+    };
+    #[cfg(not(feature = "inference"))]
+    let status = HealthStatus::Healthy;
+
     MsgPack(HealthResponse {
-        status: HealthStatus::Healthy,
+        status,
         version: VERSION.to_string(),
+        model_loaded,
     })
 }
 
@@ -51,10 +67,21 @@ pub async fn health() -> MsgPack<HealthResponse> {
 pub async fn config(State(state): State<AppState>) -> MsgPack<ConfigResponse> {
     let config = &state.config;
 
+    #[cfg(feature = "inference")]
+    let (loaded, device) = if let Some(ref model) = state.model {
+        (true, Some(model.device().to_string()))
+    } else {
+        (false, None)
+    };
+    #[cfg(not(feature = "inference"))]
+    let (loaded, device) = (false, None);
+
     MsgPack(ConfigResponse {
         model: ModelInfo {
             name: config.model.name.clone(),
             cuda_enabled: config.model.enable_cuda,
+            loaded,
+            device,
         },
         audio: AudioInfo {
             window_size_s: config.audio.window_size_s,

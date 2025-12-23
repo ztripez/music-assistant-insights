@@ -2,6 +2,8 @@
 
 use anyhow::Context;
 use tokio::signal;
+#[cfg(feature = "inference")]
+use tracing::error;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -31,8 +33,8 @@ async fn main() -> anyhow::Result<()> {
         "Configuration loaded"
     );
 
-    // Create app state
-    let state = server::AppState::new(config.clone());
+    // Create app state (with or without model)
+    let state = create_app_state(config.clone()).await;
 
     // Create router
     let app = server::create_router(state);
@@ -53,6 +55,51 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Server shutdown complete");
     Ok(())
+}
+
+/// Create application state, loading the ML model if inference feature is enabled
+#[cfg(feature = "inference")]
+async fn create_app_state(config: AppConfig) -> server::AppState {
+    use insight_sidecar::inference::{download_model, ClapModel};
+
+    info!(model = %config.model.name, "Downloading/loading CLAP model...");
+
+    // Download model files
+    match download_model(&config.model.name, None).await {
+        Ok(paths) => {
+            info!(?paths, "Model files ready, loading into ONNX Runtime...");
+
+            // Load model into ONNX Runtime (blocking operation)
+            let use_cuda = config.model.enable_cuda;
+            match tokio::task::spawn_blocking(move || ClapModel::load(&paths, use_cuda)).await {
+                Ok(Ok(model)) => {
+                    info!(device = %model.device(), "CLAP model loaded successfully");
+                    server::AppState::with_model(config, model)
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to load model: {e}");
+                    warn!("Starting without ML inference capability");
+                    server::AppState::new(config)
+                }
+                Err(e) => {
+                    error!("Model loading task panicked: {e}");
+                    warn!("Starting without ML inference capability");
+                    server::AppState::new(config)
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to download model: {e}");
+            warn!("Starting without ML inference capability");
+            server::AppState::new(config)
+        }
+    }
+}
+
+#[cfg(not(feature = "inference"))]
+async fn create_app_state(config: AppConfig) -> server::AppState {
+    info!("Inference feature not enabled, starting without ML model");
+    server::AppState::new(config)
 }
 
 /// Initialize the tracing subscriber for logging
