@@ -1,5 +1,6 @@
 //! HTTP server setup and routing.
 
+mod embed;
 mod extractors;
 mod routes;
 mod tracks;
@@ -84,9 +85,13 @@ pub fn create_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/health", get(routes::health))
         .route("/config", get(routes::config))
-        // Track embedding endpoints
+        // Embedding generation endpoints
+        .route("/embed/text", post(embed::text_embed))
+        .route("/embed/audio", post(embed::audio_embed))
+        // Track storage endpoints
         .route("/tracks/upsert", post(tracks::upsert))
         .route("/tracks/search", post(tracks::search))
+        .route("/tracks/embed-text", post(tracks::embed_text_and_store))
         .route(
             "/tracks/:id",
             get(tracks::get_track).delete(tracks::delete_track),

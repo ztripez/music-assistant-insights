@@ -2,9 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "storage")]
 use crate::storage::{SearchFilter, SearchResult, TrackMetadata};
 
+#[cfg(feature = "inference")]
+use crate::inference::{AudioData, AudioFormat};
+
 /// Request to upsert track embedding(s)
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpsertRequest {
     /// Track ID (Music Assistant item_id)
@@ -20,6 +25,7 @@ pub struct UpsertRequest {
 }
 
 /// Input metadata for upsert operations
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackMetadataInput {
     /// Track name
@@ -35,6 +41,7 @@ pub struct TrackMetadataInput {
     pub genres: Vec<String>,
 }
 
+#[cfg(feature = "storage")]
 impl TrackMetadataInput {
     /// Convert to storage TrackMetadata
     pub fn into_storage(self, track_id: String) -> TrackMetadata {
@@ -51,6 +58,7 @@ impl TrackMetadataInput {
 }
 
 /// Response from upsert operation
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpsertResponse {
     /// Track ID that was upserted
@@ -62,6 +70,7 @@ pub struct UpsertResponse {
 }
 
 /// Request to search for similar tracks
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchRequest {
     /// Query embedding (512-dimensional)
@@ -76,11 +85,13 @@ pub struct SearchRequest {
     pub filter: Option<SearchFilterInput>,
 }
 
+#[cfg(feature = "storage")]
 fn default_limit() -> usize {
     10
 }
 
 /// Input filter for search operations
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchFilterInput {
     /// Filter by artist names (any match)
@@ -97,6 +108,7 @@ pub struct SearchFilterInput {
     pub exclude_ids: Option<Vec<String>>,
 }
 
+#[cfg(feature = "storage")]
 impl From<SearchFilterInput> for SearchFilter {
     fn from(input: SearchFilterInput) -> Self {
         let mut filter = SearchFilter::new();
@@ -119,6 +131,7 @@ impl From<SearchFilterInput> for SearchFilter {
 }
 
 /// Response from search operation
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResponse {
     /// Search results sorted by similarity
@@ -128,6 +141,7 @@ pub struct SearchResponse {
 }
 
 /// Request to delete a track's embeddings
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteRequest {
     /// Delete from text collection
@@ -138,10 +152,12 @@ pub struct DeleteRequest {
     pub audio: bool,
 }
 
+#[cfg(feature = "storage")]
 fn default_true() -> bool {
     true
 }
 
+#[cfg(feature = "storage")]
 impl Default for DeleteRequest {
     fn default() -> Self {
         Self {
@@ -152,6 +168,7 @@ impl Default for DeleteRequest {
 }
 
 /// Response from delete operation
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteResponse {
     /// Track ID that was deleted
@@ -163,6 +180,7 @@ pub struct DeleteResponse {
 }
 
 /// Response for get track operation
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetTrackResponse {
     /// Track ID
@@ -181,7 +199,7 @@ pub struct GetTrackResponse {
     pub audio_embedding: Option<Vec<f32>>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "storage"))]
 mod tests {
     use super::*;
 
@@ -223,4 +241,127 @@ mod tests {
         assert!(filter.album.is_some());
         assert!(filter.exclude_ids.is_some());
     }
+}
+
+// ============================================================================
+// Embedding generation types (inference feature)
+// ============================================================================
+
+/// Request to generate text embedding
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextEmbedRequest {
+    /// Raw text to embed (optional if metadata provided)
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Track metadata to format and embed (optional if text provided)
+    #[serde(default)]
+    pub metadata: Option<TextEmbedMetadata>,
+}
+
+/// Track metadata for text embedding generation
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextEmbedMetadata {
+    /// Track name
+    pub name: String,
+    /// Artist names
+    #[serde(default)]
+    pub artists: Vec<String>,
+    /// Album name
+    #[serde(default)]
+    pub album: Option<String>,
+    /// Genre tags
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+/// Response from text embedding generation
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextEmbedResponse {
+    /// Generated embedding (512-dimensional)
+    pub embedding: Vec<f32>,
+    /// Text that was embedded (for verification)
+    pub text: String,
+}
+
+/// Request to generate audio embedding
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioEmbedRequest {
+    /// Audio format
+    pub format: AudioFormat,
+    /// Sample rate in Hz
+    pub sample_rate: u32,
+    /// Number of channels (1 = mono, 2 = stereo)
+    pub channels: u8,
+    /// Raw PCM bytes
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
+#[cfg(feature = "inference")]
+impl From<AudioEmbedRequest> for AudioData {
+    fn from(req: AudioEmbedRequest) -> Self {
+        AudioData {
+            format: req.format,
+            sample_rate: req.sample_rate,
+            channels: req.channels,
+            data: req.data,
+        }
+    }
+}
+
+/// Response from audio embedding generation
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioEmbedResponse {
+    /// Generated embedding (512-dimensional)
+    pub embedding: Vec<f32>,
+    /// Duration of audio in seconds
+    pub duration_s: f32,
+}
+
+// ============================================================================
+// Combined embedding + storage types (requires both inference and storage)
+// ============================================================================
+
+/// Request to generate text embedding from metadata and store it
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedTextAndStoreRequest {
+    /// Track ID (Music Assistant item_id)
+    pub track_id: String,
+    /// Track metadata for embedding generation and storage
+    pub metadata: EmbedTextAndStoreMetadata,
+}
+
+/// Track metadata for combined embed + store operation
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedTextAndStoreMetadata {
+    /// Track name
+    pub name: String,
+    /// Artist names
+    #[serde(default)]
+    pub artists: Vec<String>,
+    /// Album name
+    #[serde(default)]
+    pub album: Option<String>,
+    /// Genre tags
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+/// Response from combined embed + store operation
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedTextAndStoreResponse {
+    /// Track ID that was processed
+    pub track_id: String,
+    /// Whether the embedding was stored successfully
+    pub stored: bool,
+    /// The text that was embedded (for verification)
+    pub text: String,
 }
