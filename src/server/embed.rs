@@ -94,6 +94,18 @@ pub async fn audio_embed(
     // Convert request to AudioData
     let audio_data: AudioData = req.into();
 
+    // Validate audio parameters to avoid division by zero
+    if audio_data.channels == 0 {
+        return Err(AppError::BadRequest(
+            "Channel count must be at least 1".to_string(),
+        ));
+    }
+    if audio_data.sample_rate == 0 {
+        return Err(AppError::BadRequest(
+            "Sample rate must be greater than 0".to_string(),
+        ));
+    }
+
     // Calculate duration for response
     let samples_per_channel = match audio_data.format {
         crate::inference::AudioFormat::PcmF32Le => audio_data.data.len() / 4,
