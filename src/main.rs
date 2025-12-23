@@ -1,6 +1,7 @@
 //! Music Assistant Insight Sidecar - Entry Point
 
 use anyhow::Context;
+use clap::Parser;
 use tokio::signal;
 #[cfg(any(feature = "inference", feature = "storage"))]
 use tracing::error;
@@ -9,15 +10,66 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use insight_sidecar::{config::AppConfig, server};
 
+/// Music Assistant Insight Sidecar
+///
+/// ML inference sidecar providing audio/text embeddings using CLAP models
+/// with vector storage in Qdrant for similarity search.
+#[derive(Parser, Debug)]
+#[command(name = "insight-sidecar")]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// Server port to listen on
+    #[arg(short, long, env = "INSIGHT_SERVER__PORT")]
+    port: Option<u16>,
+
+    /// Server host to bind to
+    #[arg(long, env = "INSIGHT_SERVER__HOST")]
+    host: Option<String>,
+
+    /// Qdrant server URL (e.g., http://localhost:6334 or https://xxx.cloud.qdrant.io:6333)
+    #[arg(long, env = "INSIGHT_STORAGE__URL")]
+    qdrant_url: Option<String>,
+
+    /// Qdrant API key for authenticated instances (e.g., Qdrant Cloud)
+    #[arg(long, env = "INSIGHT_STORAGE__API_KEY")]
+    qdrant_api_key: Option<String>,
+
+    /// Collection name prefix for multi-tenant setups
+    #[arg(long, env = "INSIGHT_STORAGE__COLLECTION_PREFIX")]
+    collection_prefix: Option<String>,
+
+    /// Disable vector storage (run inference-only mode)
+    #[arg(long)]
+    no_storage: bool,
+
+    /// CLAP model to use (Hugging Face model ID)
+    #[arg(long, env = "INSIGHT_MODEL__NAME")]
+    model: Option<String>,
+
+    /// Enable CUDA acceleration for model inference
+    #[arg(long, env = "INSIGHT_MODEL__ENABLE_CUDA")]
+    cuda: bool,
+
+    /// Increase logging verbosity (-v for debug, -vv for trace)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    /// Quiet mode (only show warnings and errors)
+    #[arg(short, long)]
+    quiet: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    init_logging();
+    let cli = Cli::parse();
 
-    info!("Starting Music Assistant Insight Sidecar");
+    // Initialize logging based on verbosity
+    init_logging(cli.verbose, cli.quiet);
 
-    // Load configuration
-    let config = AppConfig::load().unwrap_or_else(|e| {
+    print_banner();
+
+    // Load configuration (env vars) then merge with CLI args
+    let mut config = AppConfig::load().unwrap_or_else(|e| {
         warn!("Failed to load config from environment: {e}, using defaults");
         AppConfig {
             model: Default::default(),
@@ -27,10 +79,37 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // CLI args override environment/defaults
+    if let Some(port) = cli.port {
+        config.server.port = port;
+    }
+    if let Some(host) = cli.host {
+        config.server.host = host;
+    }
+    if let Some(url) = cli.qdrant_url {
+        config.storage.url = url;
+    }
+    if let Some(api_key) = cli.qdrant_api_key {
+        config.storage.api_key = Some(api_key);
+    }
+    if let Some(prefix) = cli.collection_prefix {
+        config.storage.collection_prefix = Some(prefix);
+    }
+    if cli.no_storage {
+        config.storage.enabled = false;
+    }
+    if let Some(model) = cli.model {
+        config.model.name = model;
+    }
+    if cli.cuda {
+        config.model.enable_cuda = true;
+    }
+
     info!(
         model = %config.model.name,
         cuda = config.model.enable_cuda,
         storage_url = %config.storage.url,
+        storage_enabled = config.storage.enabled,
         "Configuration loaded"
     );
 
@@ -47,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         .context("Failed to bind to address")?;
 
     info!(%addr, "Server listening");
+    info!("API available at http://{}/api/v1/health", addr);
 
     // Run server with graceful shutdown
     axum::serve(listener, app)
@@ -58,12 +138,18 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Print startup banner
+fn print_banner() {
+    let version = env!("CARGO_PKG_VERSION");
+    info!("╔═══════════════════════════════════════════════════════╗");
+    info!("║     Music Assistant Insight Sidecar v{}          ║", version);
+    info!("║     ML-powered audio/text embeddings for MA           ║");
+    info!("╚═══════════════════════════════════════════════════════╝");
+}
+
 /// Create application state, loading the ML model and storage if features are enabled
 #[cfg(all(feature = "inference", feature = "storage"))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
-    use insight_sidecar::inference::{download_model, ClapModel};
-    use insight_sidecar::storage::{QdrantStorage, VectorStorage};
-
     // Load model first
     let model = load_model(&config).await;
 
@@ -124,7 +210,13 @@ async fn connect_storage(config: &AppConfig) -> Option<insight_sidecar::storage:
 
     info!(url = %config.storage.url, "Connecting to Qdrant...");
 
-    match QdrantStorage::new(&config.storage.url, config.storage.collection_prefix.clone()).await {
+    match QdrantStorage::new(
+        &config.storage.url,
+        config.storage.api_key.clone(),
+        config.storage.collection_prefix.clone(),
+    )
+    .await
+    {
         Ok(storage) => {
             if let Err(e) = storage.initialize().await {
                 error!("Failed to initialize storage collections: {e}");
@@ -190,7 +282,13 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
 
     info!(url = %config.storage.url, "Connecting to Qdrant...");
 
-    match QdrantStorage::new(&config.storage.url, config.storage.collection_prefix.clone()).await {
+    match QdrantStorage::new(
+        &config.storage.url,
+        config.storage.api_key.clone(),
+        config.storage.collection_prefix.clone(),
+    )
+    .await
+    {
         Ok(storage) => {
             if let Err(e) = storage.initialize().await {
                 error!("Failed to initialize storage collections: {e}");
@@ -216,11 +314,21 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
 }
 
 /// Initialize the tracing subscriber for logging
-fn init_logging() {
+fn init_logging(verbose: u8, quiet: bool) {
+    let level = if quiet {
+        "warn"
+    } else {
+        match verbose {
+            0 => "insight_sidecar=info,tower_http=info",
+            1 => "insight_sidecar=debug,tower_http=debug",
+            _ => "insight_sidecar=trace,tower_http=trace",
+        }
+    };
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "insight_sidecar=info,tower_http=debug".into()),
+                .unwrap_or_else(|_| level.into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();

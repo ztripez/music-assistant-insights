@@ -79,9 +79,13 @@ fn default_hop_size() -> f32 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
-    /// Qdrant server URL
+    /// Qdrant server URL (e.g., http://localhost:6334 or https://xxx.cloud.qdrant.io:6333)
     #[serde(default = "default_qdrant_url")]
     pub url: String,
+
+    /// API key for Qdrant Cloud or authenticated instances
+    #[serde(default)]
+    pub api_key: Option<String>,
 
     /// Prefix for collection names (useful for multi-tenant setups)
     #[serde(default)]
@@ -96,6 +100,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             url: default_qdrant_url(),
+            api_key: None,
             collection_prefix: None,
             enabled: default_storage_enabled(),
         }
