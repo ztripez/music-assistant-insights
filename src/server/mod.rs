@@ -95,7 +95,10 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/tracks/:id",
             get(tracks::get_track).delete(tracks::delete_track),
-        );
+        )
+        // Batch operations
+        .route("/tracks/batch-upsert", post(tracks::batch_upsert))
+        .route("/tracks/batch-embed-text", post(tracks::batch_embed_text));
 
     Router::new()
         .nest("/api/v1", api_routes)
