@@ -322,3 +322,46 @@ pub struct AudioEmbedResponse {
     /// Duration of audio in seconds
     pub duration_s: f32,
 }
+
+// ============================================================================
+// Combined embedding + storage types (requires both inference and storage)
+// ============================================================================
+
+/// Request to generate text embedding from metadata and store it
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedTextAndStoreRequest {
+    /// Track ID (Music Assistant item_id)
+    pub track_id: String,
+    /// Track metadata for embedding generation and storage
+    pub metadata: EmbedTextAndStoreMetadata,
+}
+
+/// Track metadata for combined embed + store operation
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedTextAndStoreMetadata {
+    /// Track name
+    pub name: String,
+    /// Artist names
+    #[serde(default)]
+    pub artists: Vec<String>,
+    /// Album name
+    #[serde(default)]
+    pub album: Option<String>,
+    /// Genre tags
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+/// Response from combined embed + store operation
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedTextAndStoreResponse {
+    /// Track ID that was processed
+    pub track_id: String,
+    /// Whether the embedding was stored successfully
+    pub stored: bool,
+    /// The text that was embedded (for verification)
+    pub text: String,
+}
