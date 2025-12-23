@@ -1,0 +1,10 @@
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]
+
+[build]
+rustflags = [
+    "-W", "clippy::all",
+    "-W", "clippy::pedantic",
+    "-A", "clippy::module_name_repetitions",
+    "-A", "clippy::must_use_candidate",
+]
