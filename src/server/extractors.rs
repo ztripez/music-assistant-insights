@@ -19,7 +19,7 @@ impl IntoResponse for MsgPackRejection {
         let body = crate::error::ErrorResponse {
             error: crate::error::ErrorDetail {
                 code: "DESERIALIZATION_ERROR",
-                message: self.message,
+                message: self.message.clone(),
             },
         };
 

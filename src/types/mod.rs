@@ -3,7 +3,11 @@
 //! These types are used across the application for request/response handling
 //! and internal data representation.
 
+pub mod api;
+
 use serde::{Deserialize, Serialize};
+
+pub use api::*;
 
 /// Health check response
 #[derive(Debug, Clone, Serialize, Deserialize)]
