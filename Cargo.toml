@@ -1,0 +1,64 @@
+[package]
+name = "insight-sidecar"
+version = "0.1.0"
+edition = "2021"
+description = "ML inference sidecar for Music Assistant - provides audio/text embeddings using CLAP models"
+license = "Apache-2.0"
+repository = "https://github.com/ztripez/music-assistant-insights"
+rust-version = "1.75"
+
+[features]
+default = []
+cuda = ["inference", "ort/cuda"]
+inference = ["dep:ort"]
+storage = ["dep:qdrant-client"]
+audio = ["dep:symphonia"]
+full = ["inference", "storage", "audio"]
+integration = []
+
+[dependencies]
+# HTTP/WebSocket server
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"
+
+# Configuration
+config = "0.14"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# ML inference (Phase 2 - optional)
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["download-binaries"], optional = true }
+
+# Vector storage (Phase 2 - optional)
+qdrant-client = { version = "1", optional = true }
+
+# Audio processing (Phase 2 - optional)
+symphonia = { version = "0.5", features = ["all"], optional = true }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+bytes = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+axum-test = "15"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
