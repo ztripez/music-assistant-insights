@@ -5,9 +5,13 @@ use std::sync::{Arc, Mutex};
 
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
-use tracing::{debug, info};
+use tokenizers::Tokenizer;
+use tracing::{debug, info, warn};
 
 use super::{AudioData, AudioProcessor, Embedding, InferenceError, ModelPaths, EMBEDDING_DIM};
+
+/// Maximum sequence length for CLAP text models
+const MAX_SEQ_LENGTH: usize = 77;
 
 /// Device type for inference
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +34,7 @@ pub struct ClapModel {
     text_session: Mutex<Session>,
     audio_session: Mutex<Session>,
     audio_processor: Mutex<AudioProcessor>,
+    tokenizer: Option<Tokenizer>,
     device: Device,
 }
 
@@ -38,6 +43,7 @@ impl std::fmt::Debug for ClapModel {
         f.debug_struct("ClapModel")
             .field("device", &self.device)
             .field("embedding_dim", &EMBEDDING_DIM)
+            .field("has_tokenizer", &self.tokenizer.is_some())
             .finish()
     }
 }
@@ -64,12 +70,30 @@ impl ClapModel {
             "Audio model loaded"
         );
 
+        // Load tokenizer if available
+        let tokenizer = if let Some(ref tokenizer_path) = paths.tokenizer_config {
+            match Tokenizer::from_file(tokenizer_path) {
+                Ok(tok) => {
+                    info!(?tokenizer_path, "Tokenizer loaded");
+                    Some(tok)
+                }
+                Err(e) => {
+                    warn!(?tokenizer_path, error = %e, "Failed to load tokenizer, using fallback");
+                    None
+                }
+            }
+        } else {
+            warn!("No tokenizer path provided, using fallback tokenization");
+            None
+        };
+
         let audio_processor = AudioProcessor::new(48000, 10.0, 10.0);
 
         Ok(Self {
             text_session: Mutex::new(text_session),
             audio_session: Mutex::new(audio_session),
             audio_processor: Mutex::new(audio_processor),
+            tokenizer,
             device,
         })
     }
@@ -122,33 +146,79 @@ impl ClapModel {
         Ok(embedding)
     }
 
-    fn run_text_inference(&self, text: &str) -> Result<Vec<f32>, InferenceError> {
-        // CLAP models typically expect tokenized input
-        // Create input_ids as i64 array (simple word-based tokenization placeholder)
-        let tokens: Vec<i64> = text
-            .split_whitespace()
-            .take(77) // CLAP max sequence length
-            .enumerate()
-            .map(|(i, _)| i as i64 + 1)
-            .collect();
+    /// Tokenize text using the loaded tokenizer or fallback
+    fn tokenize_text(&self, text: &str) -> Result<(Vec<i64>, Vec<i64>), InferenceError> {
+        if let Some(ref tokenizer) = self.tokenizer {
+            // Use the real tokenizer
+            let encoding = tokenizer
+                .encode(text, true)
+                .map_err(|e| InferenceError::Onnx(format!("Tokenization failed: {e}")))?;
 
-        let seq_len = tokens.len().max(1);
-        let mut padded_tokens = vec![0i64; 77];
-        for (i, &t) in tokens.iter().enumerate() {
-            padded_tokens[i] = t;
+            let ids = encoding.get_ids();
+            let attention = encoding.get_attention_mask();
+
+            // Truncate or pad to MAX_SEQ_LENGTH
+            let mut input_ids = vec![0i64; MAX_SEQ_LENGTH];
+            let mut attention_mask = vec![0i64; MAX_SEQ_LENGTH];
+
+            let len = ids.len().min(MAX_SEQ_LENGTH);
+            for i in 0..len {
+                input_ids[i] = ids[i] as i64;
+                attention_mask[i] = attention[i] as i64;
+            }
+
+            debug!(
+                text_len = text.len(),
+                token_count = ids.len(),
+                truncated_to = len,
+                "Text tokenized"
+            );
+
+            Ok((input_ids, attention_mask))
+        } else {
+            // Fallback: simple word-based tokenization (not recommended for production)
+            // This produces placeholder IDs that won't give meaningful embeddings
+            warn!("Using fallback tokenization - embeddings may not be meaningful");
+
+            let tokens: Vec<i64> = text
+                .split_whitespace()
+                .take(MAX_SEQ_LENGTH - 2) // Leave room for special tokens
+                .enumerate()
+                .map(|(i, _)| i as i64 + 1)
+                .collect();
+
+            let mut input_ids = vec![0i64; MAX_SEQ_LENGTH];
+            let mut attention_mask = vec![0i64; MAX_SEQ_LENGTH];
+
+            // Add CLS token at start (typically ID 101 for BERT-like models)
+            input_ids[0] = 101;
+            attention_mask[0] = 1;
+
+            // Add word tokens
+            for (i, &t) in tokens.iter().enumerate() {
+                input_ids[i + 1] = t;
+                attention_mask[i + 1] = 1;
+            }
+
+            // Add SEP token at end (typically ID 102 for BERT-like models)
+            input_ids[tokens.len() + 1] = 102;
+            attention_mask[tokens.len() + 1] = 1;
+
+            Ok((input_ids, attention_mask))
         }
+    }
+
+    fn run_text_inference(&self, text: &str) -> Result<Vec<f32>, InferenceError> {
+        // Tokenize the input text
+        let (input_ids_data, attention_mask_data) = self.tokenize_text(text)?;
 
         // Create tensors using Tensor::from_array with shape tuple
-        let input_ids = Tensor::from_array(([1usize, 77], padded_tokens.into_boxed_slice()))
-            .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+        let input_ids =
+            Tensor::from_array(([1usize, MAX_SEQ_LENGTH], input_ids_data.into_boxed_slice()))
+                .map_err(|e| InferenceError::Onnx(e.to_string()))?;
 
-        // Attention mask
-        let mut attention_mask_data = vec![0i64; 77];
-        for item in attention_mask_data.iter_mut().take(seq_len) {
-            *item = 1;
-        }
         let attention_mask =
-            Tensor::from_array(([1usize, 77], attention_mask_data.into_boxed_slice()))
+            Tensor::from_array(([1usize, MAX_SEQ_LENGTH], attention_mask_data.into_boxed_slice()))
                 .map_err(|e| InferenceError::Onnx(e.to_string()))?;
 
         // Lock session for inference
