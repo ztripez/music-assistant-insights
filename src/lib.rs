@@ -6,8 +6,13 @@
 
 pub mod config;
 pub mod error;
+#[cfg(feature = "inference")]
+pub mod inference;
 pub mod server;
 pub mod types;
 
 pub use config::AppConfig;
 pub use error::{AppError, Result};
+
+#[cfg(feature = "inference")]
+pub use inference::{ClapModel, Embedding};

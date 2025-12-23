@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct HealthResponse {
     pub status: HealthStatus,
     pub version: String,
+    pub model_loaded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,6 +33,8 @@ pub struct ConfigResponse {
 pub struct ModelInfo {
     pub name: String,
     pub cuda_enabled: bool,
+    pub loaded: bool,
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
