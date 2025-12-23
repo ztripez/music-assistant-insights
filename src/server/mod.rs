@@ -1,8 +1,13 @@
 //! HTTP server setup and routing.
 
+mod extractors;
 mod routes;
+mod tracks;
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
@@ -78,7 +83,14 @@ impl AppState {
 pub fn create_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/health", get(routes::health))
-        .route("/config", get(routes::config));
+        .route("/config", get(routes::config))
+        // Track embedding endpoints
+        .route("/tracks/upsert", post(tracks::upsert))
+        .route("/tracks/search", post(tracks::search))
+        .route(
+            "/tracks/{id}",
+            get(tracks::get_track).delete(tracks::delete_track),
+        );
 
     Router::new()
         .nest("/api/v1", api_routes)
