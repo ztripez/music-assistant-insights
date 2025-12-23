@@ -11,7 +11,7 @@ mod text;
 pub use audio::{AudioData, AudioFormat, AudioProcessor};
 pub use download::{download_model, ModelPaths};
 pub use model::{ClapModel, Device};
-pub use text::format_track_metadata;
+pub use text::{format_track_metadata, TrackMetadata as TextTrackMetadata};
 
 use crate::error::AppError;
 

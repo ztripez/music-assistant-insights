@@ -4,6 +4,8 @@ use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 
 use crate::error::AppError;
+
+#[cfg(feature = "storage")]
 use crate::types::{
     DeleteRequest, DeleteResponse, GetTrackResponse, SearchRequest, SearchResponse,
     UpsertRequest, UpsertResponse,
@@ -291,20 +293,14 @@ pub async fn delete_track(
 
 /// Fallback handlers when storage feature is disabled
 #[cfg(not(feature = "storage"))]
-pub async fn upsert(
-    State(_state): State<AppState>,
-    MsgPackExtractor(_req): MsgPackExtractor<UpsertRequest>,
-) -> Result<MsgPack<UpsertResponse>, AppError> {
+pub async fn upsert(State(_state): State<AppState>) -> Result<(), AppError> {
     Err(AppError::Internal(
         "Storage feature not enabled".to_string(),
     ))
 }
 
 #[cfg(not(feature = "storage"))]
-pub async fn search(
-    State(_state): State<AppState>,
-    MsgPackExtractor(_req): MsgPackExtractor<SearchRequest>,
-) -> Result<MsgPack<SearchResponse>, AppError> {
+pub async fn search(State(_state): State<AppState>) -> Result<(), AppError> {
     Err(AppError::Internal(
         "Storage feature not enabled".to_string(),
     ))
@@ -315,7 +311,7 @@ pub async fn get_track(
     State(_state): State<AppState>,
     Path(_track_id): Path<String>,
     Query(_query): Query<GetTrackQuery>,
-) -> Result<MsgPack<GetTrackResponse>, AppError> {
+) -> Result<(), AppError> {
     Err(AppError::Internal(
         "Storage feature not enabled".to_string(),
     ))
@@ -325,8 +321,7 @@ pub async fn get_track(
 pub async fn delete_track(
     State(_state): State<AppState>,
     Path(_track_id): Path<String>,
-    MsgPackExtractor(_req): MsgPackExtractor<DeleteRequest>,
-) -> Result<MsgPack<DeleteResponse>, AppError> {
+) -> Result<(), AppError> {
     Err(AppError::Internal(
         "Storage feature not enabled".to_string(),
     ))
