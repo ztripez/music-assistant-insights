@@ -365,3 +365,88 @@ pub struct EmbedTextAndStoreResponse {
     /// The text that was embedded (for verification)
     pub text: String,
 }
+
+// ============================================================================
+// Batch operation types (storage feature)
+// ============================================================================
+
+/// Request to batch upsert multiple track embeddings
+#[cfg(feature = "storage")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchUpsertRequest {
+    /// List of tracks to upsert
+    pub tracks: Vec<UpsertRequest>,
+}
+
+/// Response from batch upsert operation
+#[cfg(feature = "storage")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchUpsertResponse {
+    /// Results for each track
+    pub results: Vec<BatchUpsertResult>,
+    /// Total number of tracks processed
+    pub total: usize,
+    /// Number of successful upserts
+    pub succeeded: usize,
+    /// Number of failed upserts
+    pub failed: usize,
+}
+
+/// Result for a single track in batch upsert
+#[cfg(feature = "storage")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchUpsertResult {
+    /// Track ID
+    pub track_id: String,
+    /// Whether the operation succeeded
+    pub success: bool,
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Whether text embedding was stored
+    pub text_stored: bool,
+    /// Whether audio embedding was stored
+    pub audio_stored: bool,
+}
+
+// ============================================================================
+// Batch embed + store types (requires both inference and storage)
+// ============================================================================
+
+/// Request to batch generate text embeddings and store them
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchEmbedTextRequest {
+    /// List of tracks to embed and store
+    pub tracks: Vec<EmbedTextAndStoreRequest>,
+}
+
+/// Response from batch embed text operation
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchEmbedTextResponse {
+    /// Results for each track
+    pub results: Vec<BatchEmbedTextResult>,
+    /// Total number of tracks processed
+    pub total: usize,
+    /// Number of successful operations
+    pub succeeded: usize,
+    /// Number of failed operations
+    pub failed: usize,
+}
+
+/// Result for a single track in batch embed text
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchEmbedTextResult {
+    /// Track ID
+    pub track_id: String,
+    /// Whether the operation succeeded
+    pub success: bool,
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The text that was embedded (for verification)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
