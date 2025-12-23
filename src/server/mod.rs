@@ -11,12 +11,17 @@ use crate::config::AppConfig;
 #[cfg(feature = "inference")]
 use crate::inference::ClapModel;
 
+#[cfg(feature = "storage")]
+use crate::storage::QdrantStorage;
+
 /// Shared application state passed to all handlers
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,
     #[cfg(feature = "inference")]
     pub model: Option<Arc<ClapModel>>,
+    #[cfg(feature = "storage")]
+    pub storage: Option<Arc<QdrantStorage>>,
 }
 
 impl AppState {
@@ -25,6 +30,8 @@ impl AppState {
             config: Arc::new(config),
             #[cfg(feature = "inference")]
             model: None,
+            #[cfg(feature = "storage")]
+            storage: None,
         }
     }
 
@@ -34,6 +41,29 @@ impl AppState {
         Self {
             config: Arc::new(config),
             model: Some(Arc::new(model)),
+            #[cfg(feature = "storage")]
+            storage: None,
+        }
+    }
+
+    /// Create AppState with storage
+    #[cfg(feature = "storage")]
+    pub fn with_storage(config: AppConfig, storage: QdrantStorage) -> Self {
+        Self {
+            config: Arc::new(config),
+            #[cfg(feature = "inference")]
+            model: None,
+            storage: Some(Arc::new(storage)),
+        }
+    }
+
+    /// Create AppState with both model and storage
+    #[cfg(all(feature = "inference", feature = "storage"))]
+    pub fn with_model_and_storage(config: AppConfig, model: ClapModel, storage: QdrantStorage) -> Self {
+        Self {
+            config: Arc::new(config),
+            model: Some(Arc::new(model)),
+            storage: Some(Arc::new(storage)),
         }
     }
 

@@ -79,21 +79,35 @@ fn default_hop_size() -> f32 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
-    /// Path to Qdrant storage directory
-    #[serde(default = "default_storage_path")]
-    pub path: String,
+    /// Qdrant server URL
+    #[serde(default = "default_qdrant_url")]
+    pub url: String,
+
+    /// Prefix for collection names (useful for multi-tenant setups)
+    #[serde(default)]
+    pub collection_prefix: Option<String>,
+
+    /// Enable storage (set to false to run without vector storage)
+    #[serde(default = "default_storage_enabled")]
+    pub enabled: bool,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            path: default_storage_path(),
+            url: default_qdrant_url(),
+            collection_prefix: None,
+            enabled: default_storage_enabled(),
         }
     }
 }
 
-fn default_storage_path() -> String {
-    "./data/qdrant".to_string()
+fn default_qdrant_url() -> String {
+    "http://localhost:6334".to_string()
+}
+
+fn default_storage_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
