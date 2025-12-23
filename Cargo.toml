@@ -34,6 +34,9 @@ rmp-serde = "1"
 # Configuration
 config = "0.14"
 
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
 # Error handling
 thiserror = "1"
 anyhow = "1"

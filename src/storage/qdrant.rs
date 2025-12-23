@@ -34,10 +34,20 @@ impl std::fmt::Debug for QdrantStorage {
 
 impl QdrantStorage {
     /// Create a new Qdrant storage client
-    pub async fn new(url: &str, collection_prefix: Option<String>) -> Result<Self, StorageError> {
-        info!(%url, "Connecting to Qdrant");
+    pub async fn new(
+        url: &str,
+        api_key: Option<String>,
+        collection_prefix: Option<String>,
+    ) -> Result<Self, StorageError> {
+        info!(%url, has_api_key = api_key.is_some(), "Connecting to Qdrant");
 
-        let client = Qdrant::from_url(url)
+        let mut builder = Qdrant::from_url(url);
+
+        if let Some(key) = api_key {
+            builder = builder.api_key(key);
+        }
+
+        let client = builder
             .build()
             .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
 
