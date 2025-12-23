@@ -9,6 +9,7 @@ mod qdrant;
 #[cfg(feature = "storage")]
 pub use qdrant::QdrantStorage;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// Error type for storage operations
@@ -157,7 +158,7 @@ impl SearchFilter {
 }
 
 /// Trait for vector storage backends
-#[allow(async_fn_in_trait)]
+#[async_trait]
 pub trait VectorStorage: Send + Sync {
     /// Initialize storage and create collections if needed
     async fn initialize(&self) -> Result<(), StorageError>;

@@ -1,5 +1,6 @@
 //! Qdrant vector database implementation.
 
+use async_trait::async_trait;
 use qdrant_client::qdrant::{
     point_id::PointIdOptions, Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance,
     Filter, GetPointsBuilder, PointId, PointStruct, PointsIdsList, SearchPointsBuilder,
@@ -212,6 +213,7 @@ impl QdrantStorage {
     }
 }
 
+#[async_trait]
 impl VectorStorage for QdrantStorage {
     async fn initialize(&self) -> Result<(), StorageError> {
         info!("Initializing Qdrant storage");

@@ -37,6 +37,9 @@ config = "0.14"
 thiserror = "1"
 anyhow = "1"
 
+# Async trait support
+async-trait = "0.1"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
