@@ -689,3 +689,215 @@ pub struct ListMoodsResponse {
     /// Count by tier
     pub counts: std::collections::HashMap<String, usize>,
 }
+
+// ============================================================================
+// Unified Ingestion API Types
+// ============================================================================
+
+/// Unified request to ingest a track with all processing in one call.
+///
+/// This endpoint combines text embedding, audio embedding, storage, and mood
+/// classification into a single operation for efficient track ingestion.
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestRequest {
+    /// Track ID (Music Assistant item_id)
+    pub track_id: String,
+
+    /// Track metadata for text embedding generation
+    pub metadata: IngestMetadata,
+
+    /// Optional raw audio for audio embedding generation
+    #[serde(default)]
+    pub audio: Option<IngestAudio>,
+
+    /// Whether to classify mood (default: true)
+    #[serde(default = "default_true_bool")]
+    pub classify_mood: bool,
+
+    /// Which mood tiers to include (default: primary + refined)
+    #[serde(default = "default_mood_tiers")]
+    pub mood_tiers: Vec<MoodTier>,
+
+    /// Number of top moods to return per tier (default: 3)
+    #[serde(default = "default_top_k")]
+    pub mood_top_k: usize,
+
+    /// Include valence-arousal coordinates in mood response (default: true)
+    #[serde(default = "default_true_bool")]
+    pub include_va: bool,
+
+    /// Skip storage (just generate embeddings and classify)
+    #[serde(default)]
+    pub skip_storage: bool,
+}
+
+/// Track metadata for ingestion
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestMetadata {
+    /// Track name
+    pub name: String,
+    /// Artist names
+    #[serde(default)]
+    pub artists: Vec<String>,
+    /// Album name
+    #[serde(default)]
+    pub album: Option<String>,
+    /// Genre tags
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+/// Audio data for ingestion
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestAudio {
+    /// Audio format
+    pub format: AudioFormat,
+    /// Sample rate in Hz
+    pub sample_rate: u32,
+    /// Number of channels (1 = mono, 2 = stereo)
+    pub channels: u8,
+    /// Raw PCM bytes
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+impl From<IngestAudio> for AudioData {
+    fn from(audio: IngestAudio) -> Self {
+        AudioData {
+            format: audio.format,
+            sample_rate: audio.sample_rate,
+            channels: audio.channels,
+            data: audio.data,
+        }
+    }
+}
+
+/// Response from unified ingestion
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestResponse {
+    /// Track ID that was processed
+    pub track_id: String,
+
+    /// Generated text embedding (512-dimensional)
+    pub text_embedding: Vec<f32>,
+
+    /// Generated audio embedding if audio was provided (512-dimensional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_embedding: Option<Vec<f32>>,
+
+    /// Formatted text that was embedded
+    pub formatted_text: String,
+
+    /// Duration of audio in seconds (if audio was provided)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_duration_s: Option<f32>,
+
+    /// Whether text embedding was stored
+    pub text_stored: bool,
+
+    /// Whether audio embedding was stored
+    pub audio_stored: bool,
+
+    /// Mood classification results (if classify_mood was true)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mood: Option<MoodClassification>,
+}
+
+/// Request to batch ingest multiple tracks
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchIngestRequest {
+    /// Tracks to ingest
+    pub tracks: Vec<IngestTrack>,
+
+    /// Default: whether to classify mood (can be overridden per track)
+    #[serde(default = "default_true_bool")]
+    pub classify_mood: bool,
+
+    /// Default mood tiers (can be overridden per track)
+    #[serde(default = "default_mood_tiers")]
+    pub mood_tiers: Vec<MoodTier>,
+
+    /// Default top-k moods per tier
+    #[serde(default = "default_top_k")]
+    pub mood_top_k: usize,
+
+    /// Default: include valence-arousal
+    #[serde(default = "default_true_bool")]
+    pub include_va: bool,
+
+    /// Default: skip storage
+    #[serde(default)]
+    pub skip_storage: bool,
+}
+
+/// Single track in batch ingest request
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestTrack {
+    /// Track ID (Music Assistant item_id)
+    pub track_id: String,
+
+    /// Track metadata for text embedding generation
+    pub metadata: IngestMetadata,
+
+    /// Optional raw audio for audio embedding generation
+    #[serde(default)]
+    pub audio: Option<IngestAudio>,
+
+    /// Override batch classify_mood setting
+    #[serde(default)]
+    pub classify_mood: Option<bool>,
+}
+
+/// Response from batch ingestion
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchIngestResponse {
+    /// Results for each track
+    pub results: Vec<BatchIngestResult>,
+    /// Total number of tracks processed
+    pub total: usize,
+    /// Number of successful ingestions
+    pub succeeded: usize,
+    /// Number of failed ingestions
+    pub failed: usize,
+}
+
+/// Result for a single track in batch ingest
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchIngestResult {
+    /// Track ID
+    pub track_id: String,
+
+    /// Whether the operation succeeded
+    pub success: bool,
+
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+
+    /// Generated text embedding (only if success and requested)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_embedding: Option<Vec<f32>>,
+
+    /// Generated audio embedding (only if audio provided and success)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_embedding: Option<Vec<f32>>,
+
+    /// Whether text embedding was stored
+    pub text_stored: bool,
+
+    /// Whether audio embedding was stored
+    pub audio_stored: bool,
+
+    /// Mood classification (if requested and successful)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mood: Option<MoodClassification>,
+}

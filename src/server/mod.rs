@@ -2,6 +2,7 @@
 
 mod embed;
 mod extractors;
+mod ingest;
 mod management;
 mod mood;
 mod routes;
@@ -180,6 +181,9 @@ pub fn create_router(state: AppState) -> Router {
         // Batch operations
         .route("/tracks/batch-upsert", post(tracks::batch_upsert))
         .route("/tracks/batch-embed-text", post(tracks::batch_embed_text))
+        // Unified ingestion endpoints
+        .route("/tracks/ingest", post(ingest::ingest))
+        .route("/tracks/batch-ingest", post(ingest::batch_ingest))
         // Mood classification endpoints
         .route("/mood/classify", post(mood::classify_mood))
         .route("/mood/list", get(mood::list_moods));
