@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 #[cfg(feature = "inference")]
 pub mod inference;
+pub mod mood;
 pub mod server;
 pub mod storage;
 pub mod types;
@@ -17,3 +18,5 @@ pub use error::{AppError, Result};
 
 #[cfg(feature = "inference")]
 pub use inference::{ClapModel, Embedding};
+
+pub use mood::{MoodClassification, MoodScore, MoodTier};

@@ -607,3 +607,85 @@ pub struct SystemStatusResponse {
     #[serde(flatten)]
     pub status: SystemStatus,
 }
+
+// ============================================================================
+// Mood Classification API Types
+// ============================================================================
+
+use crate::mood::{MoodClassification, MoodTier};
+
+/// Request to classify mood of audio
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoodClassifyRequest {
+    /// Pre-computed audio embedding (512-dimensional)
+    #[serde(default)]
+    pub embedding: Option<Vec<f32>>,
+
+    /// Track ID to lookup embedding from storage
+    #[serde(default)]
+    pub track_id: Option<String>,
+
+    /// Which mood tiers to include in results
+    #[serde(default = "default_mood_tiers")]
+    pub tiers: Vec<MoodTier>,
+
+    /// Number of top moods to return per tier
+    #[serde(default = "default_top_k")]
+    pub top_k: usize,
+
+    /// Include valence-arousal coordinates
+    #[serde(default = "default_true_bool")]
+    pub include_va: bool,
+}
+
+fn default_mood_tiers() -> Vec<MoodTier> {
+    vec![MoodTier::Primary, MoodTier::Refined]
+}
+
+fn default_top_k() -> usize {
+    3
+}
+
+fn default_true_bool() -> bool {
+    true
+}
+
+/// Response from mood classification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoodClassifyResponse {
+    /// Classification results
+    #[serde(flatten)]
+    pub classification: MoodClassification,
+}
+
+/// Request to list available moods
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListMoodsRequest {
+    /// Filter by tier (optional)
+    #[serde(default)]
+    pub tier: Option<MoodTier>,
+}
+
+/// Info about a single mood definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoodInfo {
+    /// Mood identifier
+    pub id: String,
+    /// Display name
+    pub name: String,
+    /// Classification tier
+    pub tier: MoodTier,
+    /// Valence hint (-1 to 1)
+    pub valence_hint: f32,
+    /// Arousal hint (-1 to 1)
+    pub arousal_hint: f32,
+}
+
+/// Response listing available moods
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListMoodsResponse {
+    /// Available moods
+    pub moods: Vec<MoodInfo>,
+    /// Count by tier
+    pub counts: std::collections::HashMap<String, usize>,
+}
