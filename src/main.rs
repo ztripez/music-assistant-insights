@@ -3,7 +3,7 @@
 use anyhow::Context;
 use clap::Parser;
 use tokio::signal;
-#[cfg(any(feature = "inference", feature = "storage"))]
+#[cfg(any(feature = "inference", feature = "storage", feature = "storage-file"))]
 use tracing::error;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -13,7 +13,7 @@ use insight_sidecar::{config::AppConfig, server};
 /// Music Assistant Insight Sidecar
 ///
 /// ML inference sidecar providing audio/text embeddings using CLAP models
-/// with vector storage in Qdrant for similarity search.
+/// with vector storage for similarity search.
 #[derive(Parser, Debug)]
 #[command(name = "insight-sidecar")]
 #[command(version, about, long_about = None)]
@@ -25,6 +25,14 @@ struct Cli {
     /// Server host to bind to
     #[arg(long, env = "INSIGHT_SERVER__HOST")]
     host: Option<String>,
+
+    /// Storage mode: "file" for embedded usearch (default), "qdrant" for hosted Qdrant
+    #[arg(long, env = "INSIGHT_STORAGE__MODE", value_parser = clap::value_parser!(String))]
+    storage_mode: Option<String>,
+
+    /// Data directory for file-based storage (default: ~/.local/share/insight-sidecar)
+    #[arg(long, env = "INSIGHT_STORAGE__DATA_DIR")]
+    data_dir: Option<String>,
 
     /// Qdrant server URL (e.g., http://localhost:6334 or https://xxx.cloud.qdrant.io:6333)
     #[arg(long, env = "INSIGHT_STORAGE__URL")]
@@ -86,6 +94,15 @@ async fn main() -> anyhow::Result<()> {
     if let Some(host) = cli.host {
         config.server.host = host;
     }
+    if let Some(mode) = cli.storage_mode {
+        config.storage.mode = mode.parse().unwrap_or_else(|e| {
+            warn!("Invalid storage mode '{}': {}, using default", mode, e);
+            Default::default()
+        });
+    }
+    if let Some(data_dir) = cli.data_dir {
+        config.storage.data_dir = data_dir;
+    }
     if let Some(url) = cli.qdrant_url {
         config.storage.url = url;
     }
@@ -108,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         model = %config.model.name,
         cuda = config.model.enable_cuda,
-        storage_url = %config.storage.url,
+        storage_mode = %config.storage.mode,
         storage_enabled = config.storage.enabled,
         "Configuration loaded"
     );
@@ -148,23 +165,24 @@ fn print_banner() {
 }
 
 /// Create application state, loading the ML model and storage if features are enabled
-#[cfg(all(feature = "inference", feature = "storage"))]
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
     // Load model first
+    let model_id = config.model.name.clone();
     let model = load_model(&config).await;
 
     // Then connect to storage
     let storage = connect_storage(&config).await;
 
     match (model, storage) {
-        (Some(m), Some(s)) => server::AppState::with_model_and_storage(config, m, s),
-        (Some(m), None) => server::AppState::with_model(config, m),
+        (Some(m), Some(s)) => server::AppState::with_model_and_storage(config, m, model_id, s),
+        (Some(m), None) => server::AppState::with_model(config, m, model_id),
         (None, Some(s)) => server::AppState::with_storage(config, s),
         (None, None) => server::AppState::new(config),
     }
 }
 
-#[cfg(all(feature = "inference", feature = "storage"))]
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
 async fn load_model(config: &AppConfig) -> Option<insight_sidecar::inference::ClapModel> {
     use insight_sidecar::inference::{download_model, ClapModel};
 
@@ -199,46 +217,93 @@ async fn load_model(config: &AppConfig) -> Option<insight_sidecar::inference::Cl
     }
 }
 
-#[cfg(all(feature = "inference", feature = "storage"))]
-async fn connect_storage(config: &AppConfig) -> Option<insight_sidecar::storage::QdrantStorage> {
-    use insight_sidecar::storage::{QdrantStorage, VectorStorage};
+#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+async fn connect_storage(config: &AppConfig) -> Option<server::BoxedStorage> {
+    use insight_sidecar::config::StorageMode;
+    use insight_sidecar::storage::VectorStorage;
 
     if !config.storage.enabled {
         info!("Storage disabled in configuration");
         return None;
     }
 
-    info!(url = %config.storage.url, "Connecting to Qdrant...");
+    match config.storage.mode {
+        #[cfg(feature = "storage-file")]
+        StorageMode::File => {
+            use insight_sidecar::storage::UsearchStorage;
+            use std::path::PathBuf;
 
-    match QdrantStorage::new(
-        &config.storage.url,
-        config.storage.api_key.clone(),
-        config.storage.collection_prefix.clone(),
-    )
-    .await
-    {
-        Ok(storage) => {
-            if let Err(e) = storage.initialize().await {
-                error!("Failed to initialize storage collections: {e}");
-                warn!("Starting without vector storage capability");
-                return None;
+            let data_dir = PathBuf::from(&config.storage.data_dir);
+            info!(?data_dir, "Initializing file-based usearch storage...");
+
+            match UsearchStorage::new(data_dir) {
+                Ok(storage) => {
+                    if let Err(e) = storage.initialize().await {
+                        error!("Failed to initialize usearch storage: {e}");
+                        warn!("Starting without vector storage capability");
+                        return None;
+                    }
+                    info!("usearch file storage initialized");
+                    Some(Box::new(storage) as server::BoxedStorage)
+                }
+                Err(e) => {
+                    error!("Failed to create usearch storage: {e}");
+                    warn!("Starting without vector storage capability");
+                    None
+                }
             }
-            info!("Qdrant storage connected and initialized");
-            Some(storage)
         }
-        Err(e) => {
-            error!("Failed to connect to Qdrant: {e}");
+        #[cfg(not(feature = "storage-file"))]
+        StorageMode::File => {
+            error!("File storage requested but 'storage-file' feature not enabled");
+            warn!("Starting without vector storage capability");
+            None
+        }
+
+        #[cfg(feature = "storage")]
+        StorageMode::Qdrant => {
+            use insight_sidecar::storage::QdrantStorage;
+
+            info!(url = %config.storage.url, "Connecting to Qdrant...");
+
+            match QdrantStorage::new(
+                &config.storage.url,
+                config.storage.api_key.clone(),
+                config.storage.collection_prefix.clone(),
+            )
+            .await
+            {
+                Ok(storage) => {
+                    if let Err(e) = storage.initialize().await {
+                        error!("Failed to initialize storage collections: {e}");
+                        warn!("Starting without vector storage capability");
+                        return None;
+                    }
+                    info!("Qdrant storage connected and initialized");
+                    Some(Box::new(storage) as server::BoxedStorage)
+                }
+                Err(e) => {
+                    error!("Failed to connect to Qdrant: {e}");
+                    warn!("Starting without vector storage capability");
+                    None
+                }
+            }
+        }
+        #[cfg(not(feature = "storage"))]
+        StorageMode::Qdrant => {
+            error!("Qdrant storage requested but 'storage' feature not enabled");
             warn!("Starting without vector storage capability");
             None
         }
     }
 }
 
-/// Create application state with inference only
-#[cfg(all(feature = "inference", not(feature = "storage")))]
+/// Create application state with inference only (no storage features)
+#[cfg(all(feature = "inference", not(any(feature = "storage", feature = "storage-file"))))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
     use insight_sidecar::inference::{download_model, ClapModel};
 
+    let model_id = config.model.name.clone();
     info!(model = %config.model.name, "Downloading/loading CLAP model...");
 
     match download_model(&config.model.name, None).await {
@@ -248,7 +313,7 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
             match tokio::task::spawn_blocking(move || ClapModel::load(&paths, use_cuda)).await {
                 Ok(Ok(model)) => {
                     info!(device = %model.device(), "CLAP model loaded successfully");
-                    server::AppState::with_model(config, model)
+                    server::AppState::with_model(config, model, model_id)
                 }
                 Ok(Err(e)) => {
                     error!("Failed to load model: {e}");
@@ -270,36 +335,86 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
     }
 }
 
-/// Create application state with storage only
-#[cfg(all(feature = "storage", not(feature = "inference")))]
+/// Create application state with storage only (no inference)
+#[cfg(all(any(feature = "storage", feature = "storage-file"), not(feature = "inference")))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
-    use insight_sidecar::storage::{QdrantStorage, VectorStorage};
+    use insight_sidecar::config::StorageMode;
+    use insight_sidecar::storage::VectorStorage;
 
     if !config.storage.enabled {
         info!("Storage disabled in configuration");
         return server::AppState::new(config);
     }
 
-    info!(url = %config.storage.url, "Connecting to Qdrant...");
+    let storage: Option<server::BoxedStorage> = match config.storage.mode {
+        #[cfg(feature = "storage-file")]
+        StorageMode::File => {
+            use insight_sidecar::storage::UsearchStorage;
+            use std::path::PathBuf;
 
-    match QdrantStorage::new(
-        &config.storage.url,
-        config.storage.api_key.clone(),
-        config.storage.collection_prefix.clone(),
-    )
-    .await
-    {
-        Ok(storage) => {
-            if let Err(e) = storage.initialize().await {
-                error!("Failed to initialize storage collections: {e}");
-                warn!("Starting without vector storage capability");
-                return server::AppState::new(config);
+            let data_dir = PathBuf::from(&config.storage.data_dir);
+            info!(?data_dir, "Initializing file-based usearch storage...");
+
+            match UsearchStorage::new(data_dir) {
+                Ok(storage) => {
+                    if let Err(e) = storage.initialize().await {
+                        error!("Failed to initialize usearch storage: {e}");
+                        None
+                    } else {
+                        info!("usearch file storage initialized");
+                        Some(Box::new(storage) as server::BoxedStorage)
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to create usearch storage: {e}");
+                    None
+                }
             }
-            info!("Qdrant storage connected and initialized");
-            server::AppState::with_storage(config, storage)
         }
-        Err(e) => {
-            error!("Failed to connect to Qdrant: {e}");
+        #[cfg(not(feature = "storage-file"))]
+        StorageMode::File => {
+            error!("File storage requested but 'storage-file' feature not enabled");
+            None
+        }
+
+        #[cfg(feature = "storage")]
+        StorageMode::Qdrant => {
+            use insight_sidecar::storage::QdrantStorage;
+
+            info!(url = %config.storage.url, "Connecting to Qdrant...");
+
+            match QdrantStorage::new(
+                &config.storage.url,
+                config.storage.api_key.clone(),
+                config.storage.collection_prefix.clone(),
+            )
+            .await
+            {
+                Ok(storage) => {
+                    if let Err(e) = storage.initialize().await {
+                        error!("Failed to initialize storage collections: {e}");
+                        None
+                    } else {
+                        info!("Qdrant storage connected and initialized");
+                        Some(Box::new(storage) as server::BoxedStorage)
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to connect to Qdrant: {e}");
+                    None
+                }
+            }
+        }
+        #[cfg(not(feature = "storage"))]
+        StorageMode::Qdrant => {
+            error!("Qdrant storage requested but 'storage' feature not enabled");
+            None
+        }
+    };
+
+    match storage {
+        Some(s) => server::AppState::with_storage(config, s),
+        None => {
             warn!("Starting without vector storage capability");
             server::AppState::new(config)
         }
@@ -307,7 +422,7 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
 }
 
 /// Create application state without optional features
-#[cfg(not(any(feature = "inference", feature = "storage")))]
+#[cfg(not(any(feature = "inference", feature = "storage", feature = "storage-file")))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
     info!("No optional features enabled");
     server::AppState::new(config)

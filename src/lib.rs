@@ -12,7 +12,7 @@ pub mod server;
 pub mod storage;
 pub mod types;
 
-pub use config::AppConfig;
+pub use config::{AppConfig, StorageMode};
 pub use error::{AppError, Result};
 
 #[cfg(feature = "inference")]

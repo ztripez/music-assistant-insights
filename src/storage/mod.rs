@@ -1,13 +1,19 @@
 //! Vector storage module for track embeddings.
 //!
 //! This module provides a storage abstraction for vector embeddings,
-//! with an implementation using Qdrant as the vector database.
+//! with implementations for:
+//! - Qdrant (hosted/docker vector database)
+//! - usearch (embedded file-based storage)
 
 #[cfg(feature = "storage")]
 mod qdrant;
+#[cfg(feature = "storage-file")]
+mod usearch_store;
 
 #[cfg(feature = "storage")]
 pub use qdrant::QdrantStorage;
+#[cfg(feature = "storage-file")]
+pub use usearch_store::UsearchStorage;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

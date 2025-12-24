@@ -27,10 +27,14 @@ pub async fn text_embed(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<TextEmbedRequest>,
 ) -> Result<MsgPack<TextEmbedResponse>, AppError> {
-    let model = state
-        .model
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?;
+    // Acquire read lock and clone model for use in blocking task
+    let model = {
+        let guard = state.model.read().await;
+        guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?
+            .clone()
+    };
 
     // Determine the text to embed
     let text = if let Some(text) = req.text {
@@ -56,7 +60,6 @@ pub async fn text_embed(
 
     // Generate embedding using the model
     let embedding = tokio::task::spawn_blocking({
-        let model = model.clone();
         let text = text.clone();
         move || model.text_embedding(&text)
     })
@@ -86,10 +89,14 @@ pub async fn audio_embed(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<AudioEmbedRequest>,
 ) -> Result<MsgPack<AudioEmbedResponse>, AppError> {
-    let model = state
-        .model
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?;
+    // Acquire read lock and clone model for use in blocking task
+    let model = {
+        let guard = state.model.read().await;
+        guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?
+            .clone()
+    };
 
     // Convert request to AudioData
     let audio_data: AudioData = req.into();
@@ -125,7 +132,6 @@ pub async fn audio_embed(
 
     // Generate embedding using the model
     let embedding = tokio::task::spawn_blocking({
-        let model = model.clone();
         move || model.audio_embedding(&audio_data)
     })
     .await

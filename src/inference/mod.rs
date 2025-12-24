@@ -6,11 +6,16 @@
 mod audio;
 mod download;
 mod model;
+pub mod registry;
 mod text;
 
 pub use audio::{AudioData, AudioFormat, AudioProcessor};
-pub use download::{download_model, ModelPaths};
+pub use download::{
+    download_model, get_cache_dir, get_model_dir, get_model_size, is_model_downloaded,
+    DownloadManager, ModelPaths,
+};
 pub use model::{ClapModel, Device};
+pub use registry::{KnownModel, KNOWN_MODELS};
 pub use text::{format_track_metadata, TrackMetadata as TextTrackMetadata};
 
 use crate::error::AppError;

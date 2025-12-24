@@ -22,7 +22,7 @@ use super::routes::MsgPack;
 use super::AppState;
 
 #[cfg(feature = "storage")]
-use crate::storage::{VectorStorage, AUDIO_COLLECTION, EMBEDDING_DIM, TEXT_COLLECTION};
+use crate::storage::{AUDIO_COLLECTION, EMBEDDING_DIM, TEXT_COLLECTION};
 
 #[cfg(all(feature = "inference", feature = "storage"))]
 use crate::inference::{format_track_metadata, TextTrackMetadata};
@@ -312,10 +312,14 @@ pub async fn embed_text_and_store(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<EmbedTextAndStoreRequest>,
 ) -> Result<MsgPack<EmbedTextAndStoreResponse>, AppError> {
-    let model = state
-        .model
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?;
+    // Acquire read lock and clone model for use in blocking task
+    let model = {
+        let guard = state.model.read().await;
+        guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?
+            .clone()
+    };
 
     let storage = state
         .storage
@@ -336,7 +340,6 @@ pub async fn embed_text_and_store(
 
     // Generate embedding using the model
     let embedding = tokio::task::spawn_blocking({
-        let model = model.clone();
         let text = text.clone();
         move || model.text_embedding(&text)
     })
@@ -504,10 +507,14 @@ pub async fn batch_embed_text(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<BatchEmbedTextRequest>,
 ) -> Result<MsgPack<BatchEmbedTextResponse>, AppError> {
-    let model = state
-        .model
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?;
+    // Acquire read lock and clone model for use in blocking tasks
+    let model = {
+        let guard = state.model.read().await;
+        guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?
+            .clone()
+    };
 
     let storage = state
         .storage
