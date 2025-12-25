@@ -19,7 +19,7 @@ pub struct MsgPack<T>(pub T);
 
 impl<T: serde::Serialize> IntoResponse for MsgPack<T> {
     fn into_response(self) -> Response {
-        match rmp_serde::to_vec(&self.0) {
+        match rmp_serde::to_vec_named(&self.0) {
             Ok(bytes) => (
                 StatusCode::OK,
                 [("content-type", "application/msgpack")],
