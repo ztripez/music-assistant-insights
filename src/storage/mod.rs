@@ -38,6 +38,9 @@ pub enum StorageError {
 
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    #[error("Lock poisoned: {0}")]
+    LockPoisoned(String),
 }
 
 /// Expected embedding dimension for CLAP models

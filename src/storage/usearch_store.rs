@@ -7,9 +7,31 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::RwLock;
-use tracing::{debug, info};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tracing::{debug, info, warn};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
+
+/// Helper trait to recover from poisoned RwLocks
+trait RecoverableLock<T> {
+    fn read_or_recover(&self) -> RwLockReadGuard<'_, T>;
+    fn write_or_recover(&self) -> RwLockWriteGuard<'_, T>;
+}
+
+impl<T> RecoverableLock<T> for RwLock<T> {
+    fn read_or_recover(&self) -> RwLockReadGuard<'_, T> {
+        self.read().unwrap_or_else(|poisoned| {
+            warn!("RwLock was poisoned during read, recovering");
+            poisoned.into_inner()
+        })
+    }
+
+    fn write_or_recover(&self) -> RwLockWriteGuard<'_, T> {
+        self.write().unwrap_or_else(|poisoned| {
+            warn!("RwLock was poisoned during write, recovering");
+            poisoned.into_inner()
+        })
+    }
+}
 
 use super::{
     SearchFilter, SearchResult, StorageError, StoredEmbedding, TrackMetadata, VectorStorage,
@@ -102,7 +124,7 @@ impl UsearchStorage {
         let (text_index_path, text_meta_path, text_idmap_path) = self.get_paths(TEXT_COLLECTION);
         if text_index_path.exists() {
             info!("Loading text index from {:?}", text_index_path);
-            let index = self.text_index.write().unwrap();
+            let index = self.text_index.write_or_recover();
             index
                 .load(text_index_path.to_string_lossy().as_ref())
                 .map_err(|e| StorageError::OperationFailed(format!("Failed to load index: {}", e)))?;
@@ -113,7 +135,7 @@ impl UsearchStorage {
                 })?;
                 let metadata: HashMap<String, TrackMetadata> = bincode::deserialize(&data)
                     .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-                *self.text_metadata.write().unwrap() = metadata;
+                *self.text_metadata.write_or_recover() = metadata;
             }
 
             if text_idmap_path.exists() {
@@ -122,8 +144,8 @@ impl UsearchStorage {
                 })?;
                 let (id_map, next_key): (HashMap<String, u64>, u64) = bincode::deserialize(&data)
                     .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-                *self.text_id_map.write().unwrap() = id_map;
-                *self.text_next_key.write().unwrap() = next_key;
+                *self.text_id_map.write_or_recover() = id_map;
+                *self.text_next_key.write_or_recover() = next_key;
             }
         }
 
@@ -131,7 +153,7 @@ impl UsearchStorage {
         let (audio_index_path, audio_meta_path, audio_idmap_path) = self.get_paths(AUDIO_COLLECTION);
         if audio_index_path.exists() {
             info!("Loading audio index from {:?}", audio_index_path);
-            let index = self.audio_index.write().unwrap();
+            let index = self.audio_index.write_or_recover();
             index
                 .load(audio_index_path.to_string_lossy().as_ref())
                 .map_err(|e| StorageError::OperationFailed(format!("Failed to load index: {}", e)))?;
@@ -142,7 +164,7 @@ impl UsearchStorage {
                 })?;
                 let metadata: HashMap<String, TrackMetadata> = bincode::deserialize(&data)
                     .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-                *self.audio_metadata.write().unwrap() = metadata;
+                *self.audio_metadata.write_or_recover() = metadata;
             }
 
             if audio_idmap_path.exists() {
@@ -151,8 +173,8 @@ impl UsearchStorage {
                 })?;
                 let (id_map, next_key): (HashMap<String, u64>, u64) = bincode::deserialize(&data)
                     .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-                *self.audio_id_map.write().unwrap() = id_map;
-                *self.audio_next_key.write().unwrap() = next_key;
+                *self.audio_id_map.write_or_recover() = id_map;
+                *self.audio_next_key.write_or_recover() = next_key;
             }
         }
 
@@ -165,17 +187,17 @@ impl UsearchStorage {
 
         let (index, metadata, id_map, next_key) = if collection == TEXT_COLLECTION {
             (
-                self.text_index.read().unwrap(),
-                self.text_metadata.read().unwrap(),
-                self.text_id_map.read().unwrap(),
-                *self.text_next_key.read().unwrap(),
+                self.text_index.read_or_recover(),
+                self.text_metadata.read_or_recover(),
+                self.text_id_map.read_or_recover(),
+                *self.text_next_key.read_or_recover(),
             )
         } else {
             (
-                self.audio_index.read().unwrap(),
-                self.audio_metadata.read().unwrap(),
-                self.audio_id_map.read().unwrap(),
-                *self.audio_next_key.read().unwrap(),
+                self.audio_index.read_or_recover(),
+                self.audio_metadata.read_or_recover(),
+                self.audio_id_map.read_or_recover(),
+                *self.audio_next_key.read_or_recover(),
             )
         };
 
@@ -213,11 +235,11 @@ impl UsearchStorage {
         };
 
         // Use write lock from the start to avoid race condition
-        let mut map = id_map.write().unwrap();
+        let mut map = id_map.write_or_recover();
 
         // Use entry API for atomic check-and-insert
         *map.entry(track_id.to_string()).or_insert_with(|| {
-            let mut next = next_key.write().unwrap();
+            let mut next = next_key.write_or_recover();
             let key = *next;
             *next += 1;
             key
@@ -232,15 +254,15 @@ impl UsearchStorage {
         filter: Option<SearchFilter>,
     ) -> Vec<SearchResult> {
         let metadata_map = if collection == TEXT_COLLECTION {
-            self.text_metadata.read().unwrap()
+            self.text_metadata.read_or_recover()
         } else {
-            self.audio_metadata.read().unwrap()
+            self.audio_metadata.read_or_recover()
         };
 
         let id_map = if collection == TEXT_COLLECTION {
-            self.text_id_map.read().unwrap()
+            self.text_id_map.read_or_recover()
         } else {
-            self.audio_id_map.read().unwrap()
+            self.audio_id_map.read_or_recover()
         };
 
         // Build reverse map (key -> track_id)
@@ -300,13 +322,13 @@ impl UsearchStorage {
 impl VectorStorage for UsearchStorage {
     async fn initialize(&self) -> Result<(), StorageError> {
         // Reserve capacity for indices
-        let text_index = self.text_index.write().unwrap();
+        let text_index = self.text_index.write_or_recover();
         text_index
             .reserve(10000)
             .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
         drop(text_index);
 
-        let audio_index = self.audio_index.write().unwrap();
+        let audio_index = self.audio_index.write_or_recover();
         audio_index
             .reserve(10000)
             .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
@@ -341,7 +363,7 @@ impl VectorStorage for UsearchStorage {
 
         // Remove existing if present, then add
         {
-            let idx = index.write().unwrap();
+            let idx = index.write_or_recover();
             let _ = idx.remove(key); // Ignore error if not exists
             idx.add(key, embedding)
                 .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
@@ -349,8 +371,7 @@ impl VectorStorage for UsearchStorage {
 
         // Update metadata
         metadata_map
-            .write()
-            .unwrap()
+            .write_or_recover()
             .insert(track_id.to_string(), metadata);
 
         // Save to disk
@@ -387,9 +408,9 @@ impl VectorStorage for UsearchStorage {
         }
 
         let index = if collection == TEXT_COLLECTION {
-            self.text_index.read().unwrap()
+            self.text_index.read_or_recover()
         } else {
-            self.audio_index.read().unwrap()
+            self.audio_index.read_or_recover()
         };
 
         // Search with extra results to account for filtering
@@ -428,22 +449,22 @@ impl VectorStorage for UsearchStorage {
 
         // Get key for track_id
         let key = {
-            let map = id_map.read().unwrap();
+            let map = id_map.read_or_recover();
             map.get(track_id).copied()
         };
 
         if let Some(key) = key {
             // Remove from index
-            let idx = index.write().unwrap();
+            let idx = index.write_or_recover();
             idx.remove(key)
                 .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
             drop(idx);
 
             // Remove from metadata
-            metadata_map.write().unwrap().remove(track_id);
+            metadata_map.write_or_recover().remove(track_id);
 
             // Remove from id map
-            id_map.write().unwrap().remove(track_id);
+            id_map.write_or_recover().remove(track_id);
 
             // Save to disk
             self.save_to_disk(collection)?;
@@ -466,9 +487,9 @@ impl VectorStorage for UsearchStorage {
         track_id: &str,
     ) -> Result<Option<StoredEmbedding>, StorageError> {
         let metadata_map = if collection == TEXT_COLLECTION {
-            self.text_metadata.read().unwrap()
+            self.text_metadata.read_or_recover()
         } else {
-            self.audio_metadata.read().unwrap()
+            self.audio_metadata.read_or_recover()
         };
 
         let metadata = match metadata_map.get(track_id) {
@@ -480,9 +501,9 @@ impl VectorStorage for UsearchStorage {
 
         // Get the key
         let id_map = if collection == TEXT_COLLECTION {
-            self.text_id_map.read().unwrap()
+            self.text_id_map.read_or_recover()
         } else {
-            self.audio_id_map.read().unwrap()
+            self.audio_id_map.read_or_recover()
         };
 
         let _key = match id_map.get(track_id) {
@@ -504,9 +525,9 @@ impl VectorStorage for UsearchStorage {
 
     async fn exists(&self, collection: &str, track_id: &str) -> Result<bool, StorageError> {
         let metadata_map = if collection == TEXT_COLLECTION {
-            self.text_metadata.read().unwrap()
+            self.text_metadata.read_or_recover()
         } else {
-            self.audio_metadata.read().unwrap()
+            self.audio_metadata.read_or_recover()
         };
 
         Ok(metadata_map.contains_key(track_id))
@@ -514,9 +535,9 @@ impl VectorStorage for UsearchStorage {
 
     async fn count(&self, collection: &str) -> Result<u64, StorageError> {
         let index = if collection == TEXT_COLLECTION {
-            self.text_index.read().unwrap()
+            self.text_index.read_or_recover()
         } else {
-            self.audio_index.read().unwrap()
+            self.audio_index.read_or_recover()
         };
 
         Ok(index.size() as u64)

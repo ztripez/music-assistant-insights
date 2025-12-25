@@ -173,6 +173,20 @@ impl DownloadManager {
         });
     }
 
+    /// Clear old finished downloads (older than 1 hour)
+    async fn cleanup_old_downloads(&self) {
+        let cutoff = chrono::Utc::now().timestamp() - 3600; // 1 hour ago
+        let mut downloads = self.downloads.write().await;
+        downloads.retain(|_, d| {
+            // Keep active downloads
+            if matches!(d.status, DownloadStatus::Pending | DownloadStatus::Downloading) {
+                return true;
+            }
+            // Keep recent finished downloads
+            d.completed_at.map_or(true, |t| t > cutoff)
+        });
+    }
+
     /// Run the actual download
     async fn run_download(&self, download_id: &str, model_id: &str) -> Result<(), InferenceError> {
         let config = ModelConfig::from_model_id(model_id);
@@ -247,22 +261,30 @@ impl DownloadManager {
     }
 
     async fn mark_completed(&self, download_id: &str) {
-        let mut downloads = self.downloads.write().await;
-        if let Some(progress) = downloads.get_mut(download_id) {
-            progress.status = DownloadStatus::Completed;
-            progress.progress_percent = 100.0;
-            progress.completed_at = Some(chrono::Utc::now().timestamp());
-            progress.current_file = None;
+        {
+            let mut downloads = self.downloads.write().await;
+            if let Some(progress) = downloads.get_mut(download_id) {
+                progress.status = DownloadStatus::Completed;
+                progress.progress_percent = 100.0;
+                progress.completed_at = Some(chrono::Utc::now().timestamp());
+                progress.current_file = None;
+            }
         }
+        // Cleanup old finished downloads to prevent memory growth
+        self.cleanup_old_downloads().await;
     }
 
     async fn mark_failed(&self, download_id: &str, error: &str) {
-        let mut downloads = self.downloads.write().await;
-        if let Some(progress) = downloads.get_mut(download_id) {
-            progress.status = DownloadStatus::Failed;
-            progress.error = Some(error.to_string());
-            progress.completed_at = Some(chrono::Utc::now().timestamp());
+        {
+            let mut downloads = self.downloads.write().await;
+            if let Some(progress) = downloads.get_mut(download_id) {
+                progress.status = DownloadStatus::Failed;
+                progress.error = Some(error.to_string());
+                progress.completed_at = Some(chrono::Utc::now().timestamp());
+            }
         }
+        // Cleanup old finished downloads to prevent memory growth
+        self.cleanup_old_downloads().await;
     }
 
     async fn update_progress(
