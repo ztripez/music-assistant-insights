@@ -167,6 +167,12 @@ async fn main() -> anyhow::Result<()> {
     // Create app state (with optional model and storage)
     let state = create_app_state(config.clone()).await;
 
+    // Start background tasks
+    #[cfg(feature = "inference")]
+    {
+        server::spawn_session_cleanup_task(state.stream_manager.clone());
+    }
+
     // Create router
     let app = server::create_router(state);
 

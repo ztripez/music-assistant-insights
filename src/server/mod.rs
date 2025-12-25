@@ -34,6 +34,9 @@ use crate::watcher::WatcherService;
 #[cfg(feature = "inference")]
 use stream::{SharedStreamManager, StreamSessionManager};
 
+#[cfg(feature = "inference")]
+pub use stream::spawn_session_cleanup_task;
+
 /// Type alias for boxed storage implementation
 #[cfg(any(feature = "storage", feature = "storage-file"))]
 pub type BoxedStorage = Box<dyn VectorStorage>;

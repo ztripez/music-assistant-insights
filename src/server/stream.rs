@@ -512,6 +512,35 @@ impl StreamSessionManager {
 /// Type alias for shared session manager
 pub type SharedStreamManager = Arc<RwLock<StreamSessionManager>>;
 
+/// Interval for session cleanup checks (60 seconds)
+const CLEANUP_INTERVAL_SECS: u64 = 60;
+
+/// Spawn a background task to periodically clean up timed-out sessions
+pub fn spawn_session_cleanup_task(manager: SharedStreamManager) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
+
+        loop {
+            interval.tick().await;
+
+            let cleaned = {
+                let mut mgr = manager.write().await;
+                mgr.cleanup_timed_out()
+            };
+
+            if cleaned > 0 {
+                info!(count = cleaned, "Cleaned up timed-out streaming sessions");
+            }
+        }
+    });
+
+    info!(
+        interval_secs = CLEANUP_INTERVAL_SECS,
+        timeout_secs = SESSION_TIMEOUT_SECS,
+        "Started streaming session cleanup task"
+    );
+}
+
 // ============================================================================
 // HTTP Handlers
 // ============================================================================
