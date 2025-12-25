@@ -17,6 +17,7 @@ use axum::{
 };
 use std::sync::Arc;
 use std::time::Instant;
+#[cfg(any(feature = "inference", feature = "watcher"))]
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 

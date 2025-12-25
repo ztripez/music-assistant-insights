@@ -7,15 +7,20 @@
 //! - Storage statistics
 
 use axum::extract::{Path, State};
+#[cfg(feature = "inference")]
 use tracing::info;
 
 use crate::error::AppError;
+#[cfg(feature = "inference")]
 use crate::types::{
-    DeleteModelResponse, DownloadModelRequest, DownloadModelResponse, HealthStatus,
-    ListDownloadsResponse, ListModelsResponse, LoadModelRequest, LoadModelResponse, ModelDetail,
-    ModelStatus, StorageStats, StorageStatsResponse, SystemStatus, SystemStatusResponse,
+    DeleteModelResponse, DownloadModelRequest, DownloadModelResponse, ListDownloadsResponse,
+    ListModelsResponse, LoadModelRequest, LoadModelResponse, ModelStatus,
 };
+use crate::types::{HealthStatus, ModelDetail, StorageStats, SystemStatus, SystemStatusResponse};
+#[cfg(any(feature = "storage", feature = "storage-file"))]
+use crate::types::StorageStatsResponse;
 
+#[cfg(feature = "inference")]
 use super::extractors::MsgPackExtractor;
 use super::routes::MsgPack;
 use super::AppState;
@@ -36,6 +41,7 @@ pub async fn status(State(state): State<AppState>) -> MsgPack<SystemStatusRespon
     let model_loaded = state.has_model().await;
     #[cfg(not(feature = "inference"))]
     let model_loaded = false;
+    let _ = model_loaded; // Used conditionally below
 
     #[cfg(any(feature = "storage", feature = "storage-file"))]
     let _storage_connected = state.storage.is_some();

@@ -38,6 +38,7 @@ impl<T: serde::Serialize> IntoResponse for MsgPack<T> {
 /// Health check endpoint
 ///
 /// GET /api/v1/health
+#[allow(unused_variables)]
 pub async fn health(State(state): State<AppState>) -> MsgPack<HealthResponse> {
     #[cfg(feature = "inference")]
     let model_loaded = state.has_model().await;

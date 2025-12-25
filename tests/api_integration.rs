@@ -56,6 +56,7 @@ async fn test_status_endpoint() {
 }
 
 #[tokio::test]
+#[cfg(feature = "inference")]
 async fn test_models_list_endpoint() {
     let server = create_test_server();
 
@@ -66,6 +67,17 @@ async fn test_models_list_endpoint() {
     let content_type = response.headers().get("content-type");
     assert!(content_type.is_some());
     assert!(content_type.unwrap().to_str().unwrap().contains("msgpack"));
+}
+
+#[tokio::test]
+#[cfg(not(feature = "inference"))]
+async fn test_models_list_endpoint() {
+    let server = create_test_server();
+
+    let response = server.get("/api/v1/models").await;
+
+    // Without inference feature, models endpoint returns error
+    response.assert_status_not_ok();
 }
 
 #[tokio::test]

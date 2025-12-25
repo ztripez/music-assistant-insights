@@ -12,7 +12,7 @@ use crate::storage::VectorStorage;
 
 use super::config::{WatchedFolder, WatcherConfig};
 use super::processor::TrackProcessor;
-use super::scanner::{FolderScanner, ScannedFile};
+use super::scanner::FolderScanner;
 use super::state::{FileRegistry, FolderState, ScanProgress, WatcherState, WatcherStats, WatcherStatus};
 use super::watcher::{FileEvent, FolderWatcher};
 use super::WatcherError;

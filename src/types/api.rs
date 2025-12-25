@@ -867,11 +867,11 @@ pub struct StreamStatusResponse {
 // ============================================================================
 
 #[cfg(test)]
+#[cfg(feature = "inference")]
 mod stream_api_tests {
     use super::*;
 
     #[test]
-    #[cfg(feature = "inference")]
     fn test_start_stream_request() {
         let json = r#"{
             "track_id": "spotify:track:abc123",
