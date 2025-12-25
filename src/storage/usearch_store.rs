@@ -330,29 +330,9 @@ impl UsearchStorage {
             })
             .collect()
     }
-}
 
-#[async_trait]
-impl VectorStorage for UsearchStorage {
-    async fn initialize(&self) -> Result<(), StorageError> {
-        // Reserve capacity for indices
-        let text_index = self.text_index.write_or_recover();
-        text_index
-            .reserve(10000)
-            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
-        drop(text_index);
-
-        let audio_index = self.audio_index.write_or_recover();
-        audio_index
-            .reserve(10000)
-            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
-        drop(audio_index);
-
-        info!("usearch storage initialized");
-        Ok(())
-    }
-
-    async fn upsert(
+    /// Internal upsert without saving to disk (for batch operations)
+    fn upsert_one(
         &self,
         collection: &str,
         track_id: &str,
@@ -388,7 +368,81 @@ impl VectorStorage for UsearchStorage {
             .write_or_recover()
             .insert(track_id.to_string(), metadata);
 
-        // Save to disk (async)
+        Ok(())
+    }
+
+    /// Internal delete without saving to disk (for batch operations)
+    fn delete_one(&self, collection: &str, track_id: &str) -> Result<bool, StorageError> {
+        let (index, metadata_map, id_map) = if collection == TEXT_COLLECTION {
+            (
+                &self.text_index,
+                &self.text_metadata,
+                &self.text_id_map,
+            )
+        } else {
+            (
+                &self.audio_index,
+                &self.audio_metadata,
+                &self.audio_id_map,
+            )
+        };
+
+        // Get key for track_id
+        let key = {
+            let map = id_map.read_or_recover();
+            map.get(track_id).copied()
+        };
+
+        if let Some(key) = key {
+            // Remove from index
+            let idx = index.write_or_recover();
+            idx.remove(key)
+                .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+            drop(idx);
+
+            // Remove from metadata
+            metadata_map.write_or_recover().remove(track_id);
+
+            // Remove from id map
+            id_map.write_or_recover().remove(track_id);
+
+            Ok(true) // Was deleted
+        } else {
+            Ok(false) // Nothing to delete
+        }
+    }
+}
+
+#[async_trait]
+impl VectorStorage for UsearchStorage {
+    async fn initialize(&self) -> Result<(), StorageError> {
+        // Reserve capacity for indices
+        let text_index = self.text_index.write_or_recover();
+        text_index
+            .reserve(10000)
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+        drop(text_index);
+
+        let audio_index = self.audio_index.write_or_recover();
+        audio_index
+            .reserve(10000)
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+        drop(audio_index);
+
+        info!("usearch storage initialized");
+        Ok(())
+    }
+
+    async fn upsert(
+        &self,
+        collection: &str,
+        track_id: &str,
+        embedding: &[f32],
+        metadata: TrackMetadata,
+    ) -> Result<(), StorageError> {
+        self.upsert_one(collection, track_id, embedding, metadata)?;
+
+        // Save to disk after single upsert
         self.save_to_disk(collection).await?;
 
         debug!(track_id, collection, "Upserted embedding");
@@ -400,10 +454,19 @@ impl VectorStorage for UsearchStorage {
         collection: &str,
         items: Vec<(String, Vec<f32>, TrackMetadata)>,
     ) -> Result<(), StorageError> {
-        for (track_id, embedding, metadata) in items {
-            self.upsert(collection, &track_id, &embedding, metadata)
-                .await?;
+        if items.is_empty() {
+            return Ok(());
         }
+
+        // Upsert all items without saving
+        for (track_id, embedding, metadata) in &items {
+            self.upsert_one(collection, track_id, embedding, metadata.clone())?;
+        }
+
+        // Save once after all upserts
+        self.save_to_disk(collection).await?;
+
+        debug!(collection, count = items.len(), "Batch upserted embeddings");
         Ok(())
     }
 
@@ -447,43 +510,10 @@ impl VectorStorage for UsearchStorage {
     }
 
     async fn delete(&self, collection: &str, track_id: &str) -> Result<(), StorageError> {
-        let (index, metadata_map, id_map) = if collection == TEXT_COLLECTION {
-            (
-                &self.text_index,
-                &self.text_metadata,
-                &self.text_id_map,
-            )
-        } else {
-            (
-                &self.audio_index,
-                &self.audio_metadata,
-                &self.audio_id_map,
-            )
-        };
+        let deleted = self.delete_one(collection, track_id)?;
 
-        // Get key for track_id
-        let key = {
-            let map = id_map.read_or_recover();
-            map.get(track_id).copied()
-        };
-
-        if let Some(key) = key {
-            // Synchronous operations in their own scope to ensure guards are dropped before await
-            {
-                // Remove from index
-                let idx = index.write_or_recover();
-                idx.remove(key)
-                    .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
-                // idx dropped at end of scope
-
-                // Remove from metadata
-                metadata_map.write_or_recover().remove(track_id);
-
-                // Remove from id map
-                id_map.write_or_recover().remove(track_id);
-            }
-
-            // Save to disk (async) - guards are now dropped
+        if deleted {
+            // Save to disk after single delete
             self.save_to_disk(collection).await?;
         }
 
@@ -492,9 +522,25 @@ impl VectorStorage for UsearchStorage {
     }
 
     async fn delete_batch(&self, collection: &str, track_ids: &[String]) -> Result<(), StorageError> {
-        for track_id in track_ids {
-            self.delete(collection, track_id).await?;
+        if track_ids.is_empty() {
+            return Ok(());
         }
+
+        let mut any_deleted = false;
+
+        // Delete all items without saving
+        for track_id in track_ids {
+            if self.delete_one(collection, track_id)? {
+                any_deleted = true;
+            }
+        }
+
+        // Save once after all deletes
+        if any_deleted {
+            self.save_to_disk(collection).await?;
+        }
+
+        debug!(collection, count = track_ids.len(), "Batch deleted embeddings");
         Ok(())
     }
 
