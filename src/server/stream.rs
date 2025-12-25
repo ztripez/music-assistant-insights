@@ -331,8 +331,8 @@ impl StreamSession {
 
         // Check if we have enough remaining samples to process
         if self.resampled_buffer.len() >= min_samples {
-            // Pad to window size if needed
-            let mut final_window = self.resampled_buffer.clone();
+            // Take ownership of buffer since we're finalizing (avoids clone)
+            let mut final_window = std::mem::take(&mut self.resampled_buffer);
             if final_window.len() < WINDOW_SAMPLES {
                 final_window.resize(WINDOW_SAMPLES, 0.0);
             } else {
@@ -711,7 +711,7 @@ pub async fn end_stream(
         }
     };
 
-    // Generate text embedding from metadata
+    // Generate text embedding from metadata (needs reference first)
     let text = format_metadata_text(&session.metadata);
     let text_embedding = match model.text_embedding(&text) {
         Ok(emb) => emb,
@@ -734,35 +734,40 @@ pub async fn end_stream(
         if let Some(ref storage) = state.storage {
             use crate::storage::{TrackMetadata, AUDIO_COLLECTION, TEXT_COLLECTION};
 
-            // Build metadata for storage
-            let mut metadata = TrackMetadata::new(track_id.clone(), session.metadata.name.clone())
-                .with_artists(session.metadata.artists.clone())
-                .with_genres(session.metadata.genres.clone());
+            // Move metadata fields from session (avoids clones since we own session)
+            let IngestMetadata { name, artists, album, genres } = session.metadata;
 
-            if let Some(ref album) = session.metadata.album {
-                metadata = metadata.with_album(album.clone());
+            // Build metadata for storage - move fields instead of cloning
+            let mut metadata = TrackMetadata::new(track_id.clone(), name)
+                .with_artists(artists)
+                .with_genres(genres);
+
+            if let Some(album_name) = album {
+                metadata = metadata.with_album(album_name);
             }
 
-            // Store text embedding
-            if let Err(e) = storage
-                .upsert(TEXT_COLLECTION, &track_id, text_embedding.data(), metadata.clone())
-                .await
-            {
-                warn!(error = %e, "Failed to store text embedding");
-            } else {
-                text_stored = true;
-            }
-
-            // Store audio embedding
+            // Store audio embedding first (moves metadata ownership)
             if let Some(ref audio_emb) = audio_embedding {
+                // Clone metadata only if we need it for text embedding too
+                let audio_metadata = metadata.clone();
                 if let Err(e) = storage
-                    .upsert(AUDIO_COLLECTION, &track_id, audio_emb, metadata)
+                    .upsert(AUDIO_COLLECTION, &track_id, audio_emb, audio_metadata)
                     .await
                 {
                     warn!(error = %e, "Failed to store audio embedding");
                 } else {
                     audio_stored = true;
                 }
+            }
+
+            // Store text embedding (moves metadata, no clone needed)
+            if let Err(e) = storage
+                .upsert(TEXT_COLLECTION, &track_id, text_embedding.data(), metadata)
+                .await
+            {
+                warn!(error = %e, "Failed to store text embedding");
+            } else {
+                text_stored = true;
             }
         }
     }
