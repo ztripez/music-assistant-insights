@@ -68,6 +68,23 @@ pub struct TrackMetadata {
     pub file_path: Option<String>,
     /// Unix timestamp of last update
     pub updated_at: i64,
+
+    // Mood classification fields (optional, populated by mood classification)
+    /// Primary mood (top tier-1 mood)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_mood: Option<String>,
+    /// All detected moods
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moods: Option<Vec<String>>,
+    /// Mood confidence scores (mood_id -> confidence 0.0-1.0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mood_scores: Option<std::collections::HashMap<String, f32>>,
+    /// Valence (-1.0 negative to 1.0 positive)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valence: Option<f32>,
+    /// Arousal (-1.0 calm to 1.0 energetic)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arousal: Option<f32>,
 }
 
 impl TrackMetadata {
@@ -84,6 +101,11 @@ impl TrackMetadata {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0),
+            primary_mood: None,
+            moods: None,
+            mood_scores: None,
+            valence: None,
+            arousal: None,
         }
     }
 
@@ -108,6 +130,31 @@ impl TrackMetadata {
     /// Builder method to add file path
     pub fn with_file_path(mut self, path: impl Into<String>) -> Self {
         self.file_path = Some(path.into());
+        self
+    }
+
+    /// Builder method to set primary mood
+    pub fn with_primary_mood(mut self, mood: impl Into<String>) -> Self {
+        self.primary_mood = Some(mood.into());
+        self
+    }
+
+    /// Builder method to set detected moods
+    pub fn with_moods(mut self, moods: Vec<String>) -> Self {
+        self.moods = Some(moods);
+        self
+    }
+
+    /// Builder method to set mood scores
+    pub fn with_mood_scores(mut self, scores: std::collections::HashMap<String, f32>) -> Self {
+        self.mood_scores = Some(scores);
+        self
+    }
+
+    /// Builder method to set valence-arousal coordinates
+    pub fn with_valence_arousal(mut self, valence: f32, arousal: f32) -> Self {
+        self.valence = Some(valence);
+        self.arousal = Some(arousal);
         self
     }
 }
