@@ -703,49 +703,11 @@ pub struct ListMoodsResponse {
 }
 
 // ============================================================================
-// Unified Ingestion API Types
+// Shared Ingestion Types
 // ============================================================================
 
-/// Unified request to ingest a track with all processing in one call.
-///
-/// This endpoint combines text embedding, audio embedding, storage, and mood
-/// classification into a single operation for efficient track ingestion.
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestRequest {
-    /// Track ID (Music Assistant item_id)
-    pub track_id: String,
-
-    /// Track metadata for text embedding generation
-    pub metadata: IngestMetadata,
-
-    /// Optional raw audio for audio embedding generation
-    #[serde(default)]
-    pub audio: Option<IngestAudio>,
-
-    /// Whether to classify mood (default: true)
-    #[serde(default = "default_true_bool")]
-    pub classify_mood: bool,
-
-    /// Which mood tiers to include (default: primary + refined)
-    #[serde(default = "default_mood_tiers")]
-    pub mood_tiers: Vec<MoodTier>,
-
-    /// Number of top moods to return per tier (default: 3)
-    #[serde(default = "default_top_k")]
-    pub mood_top_k: usize,
-
-    /// Include valence-arousal coordinates in mood response (default: true)
-    #[serde(default = "default_true_bool")]
-    pub include_va: bool,
-
-    /// Skip storage (just generate embeddings and classify)
-    #[serde(default)]
-    pub skip_storage: bool,
-}
-
-/// Track metadata for ingestion
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+/// Track metadata for ingestion (used by streaming)
+#[cfg(feature = "inference")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestMetadata {
     /// Track name
@@ -761,157 +723,143 @@ pub struct IngestMetadata {
     pub genres: Vec<String>,
 }
 
-/// Audio data for ingestion
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+// ============================================================================
+// Streaming Ingestion API Types
+// ============================================================================
+
+/// Request to start a streaming ingestion session.
+///
+/// MA opens a session when playback begins, then streams audio frames
+/// as the user listens.
+#[cfg(feature = "inference")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestAudio {
-    /// Audio format
-    pub format: AudioFormat,
-    /// Sample rate in Hz
-    pub sample_rate: u32,
-    /// Number of channels (1 = mono, 2 = stereo)
-    pub channels: u8,
-    /// Raw PCM bytes
-    #[serde(with = "serde_bytes")]
-    pub data: Vec<u8>,
-}
-
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-impl From<IngestAudio> for AudioData {
-    fn from(audio: IngestAudio) -> Self {
-        AudioData {
-            format: audio.format,
-            sample_rate: audio.sample_rate,
-            channels: audio.channels,
-            data: audio.data,
-        }
-    }
-}
-
-/// Response from unified ingestion
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestResponse {
-    /// Track ID that was processed
-    pub track_id: String,
-
-    /// Generated text embedding (512-dimensional)
-    pub text_embedding: Vec<f32>,
-
-    /// Generated audio embedding if audio was provided (512-dimensional)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio_embedding: Option<Vec<f32>>,
-
-    /// Formatted text that was embedded
-    pub formatted_text: String,
-
-    /// Duration of audio in seconds (if audio was provided)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio_duration_s: Option<f32>,
-
-    /// Whether text embedding was stored
-    pub text_stored: bool,
-
-    /// Whether audio embedding was stored
-    pub audio_stored: bool,
-
-    /// Mood classification results (if classify_mood was true)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mood: Option<MoodClassification>,
-}
-
-/// Request to batch ingest multiple tracks
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchIngestRequest {
-    /// Tracks to ingest
-    pub tracks: Vec<IngestTrack>,
-
-    /// Default: whether to classify mood (can be overridden per track)
-    #[serde(default = "default_true_bool")]
-    pub classify_mood: bool,
-
-    /// Default mood tiers (can be overridden per track)
-    #[serde(default = "default_mood_tiers")]
-    pub mood_tiers: Vec<MoodTier>,
-
-    /// Default top-k moods per tier
-    #[serde(default = "default_top_k")]
-    pub mood_top_k: usize,
-
-    /// Default: include valence-arousal
-    #[serde(default = "default_true_bool")]
-    pub include_va: bool,
-
-    /// Default: skip storage
-    #[serde(default)]
-    pub skip_storage: bool,
-}
-
-/// Single track in batch ingest request
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestTrack {
+pub struct StartStreamRequest {
     /// Track ID (Music Assistant item_id)
     pub track_id: String,
 
     /// Track metadata for text embedding generation
     pub metadata: IngestMetadata,
 
-    /// Optional raw audio for audio embedding generation
-    #[serde(default)]
-    pub audio: Option<IngestAudio>,
+    /// Audio format of incoming frames
+    pub format: AudioFormat,
 
-    /// Override batch classify_mood setting
-    #[serde(default)]
-    pub classify_mood: Option<bool>,
+    /// Sample rate of incoming audio (will be resampled to 48kHz)
+    pub sample_rate: u32,
+
+    /// Number of channels (1 = mono, 2 = stereo)
+    pub channels: u8,
 }
 
-/// Response from batch ingestion
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+/// Response from starting a streaming session
+#[cfg(feature = "inference")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchIngestResponse {
-    /// Results for each track
-    pub results: Vec<BatchIngestResult>,
-    /// Total number of tracks processed
-    pub total: usize,
-    /// Number of successful ingestions
-    pub succeeded: usize,
-    /// Number of failed ingestions
-    pub failed: usize,
+pub struct StartStreamResponse {
+    /// Unique session ID for subsequent calls
+    pub session_id: String,
+
+    /// Number of samples needed per embedding window (at 48kHz)
+    /// This is 480,000 samples = 10 seconds
+    pub window_samples: usize,
 }
 
-/// Result for a single track in batch ingest
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+/// Response from sending audio frames
+#[cfg(feature = "inference")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchIngestResult {
-    /// Track ID
+pub struct FramesResponse {
+    /// Seconds of audio buffered (at 48kHz, after resampling)
+    pub buffered_seconds: f32,
+
+    /// Number of 10-second windows that have been processed
+    pub windows_completed: usize,
+}
+
+/// Request to end a streaming session and finalize embeddings
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndStreamRequest {
+    /// Whether to store embeddings in the vector database
+    #[serde(default = "default_true_bool")]
+    pub store: bool,
+
+    /// Minimum duration (in seconds) required to generate embeddings
+    /// Shorter audio will be discarded
+    #[serde(default = "default_min_duration")]
+    pub min_duration_s: f32,
+}
+
+#[cfg(feature = "inference")]
+fn default_min_duration() -> f32 {
+    3.0
+}
+
+#[cfg(feature = "inference")]
+impl Default for EndStreamRequest {
+    fn default() -> Self {
+        Self {
+            store: true,
+            min_duration_s: 3.0,
+        }
+    }
+}
+
+/// Response from ending a streaming session
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndStreamResponse {
+    /// Track ID that was processed
     pub track_id: String,
 
-    /// Whether the operation succeeded
-    pub success: bool,
+    /// Total duration of audio received (in seconds)
+    pub duration_s: f32,
 
-    /// Error message if failed
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-
-    /// Generated text embedding (only if success and requested)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text_embedding: Option<Vec<f32>>,
-
-    /// Generated audio embedding (only if audio provided and success)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio_embedding: Option<Vec<f32>>,
+    /// Number of 10-second windows processed
+    pub windows_processed: usize,
 
     /// Whether text embedding was stored
     pub text_stored: bool,
 
     /// Whether audio embedding was stored
     pub audio_stored: bool,
+}
 
-    /// Mood classification (if requested and successful)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mood: Option<MoodClassification>,
+/// Status of a streaming session
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamSessionStatus {
+    /// Session is active and receiving frames
+    Active,
+    /// Session is processing final embeddings
+    Finalizing,
+    /// Session completed successfully
+    Completed,
+    /// Session was aborted
+    Aborted,
+    /// Session encountered an error
+    Error,
+}
+
+/// Response from getting session status
+#[cfg(feature = "inference")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamStatusResponse {
+    /// Session ID
+    pub session_id: String,
+
+    /// Track ID being processed
+    pub track_id: String,
+
+    /// Current session status
+    pub status: StreamSessionStatus,
+
+    /// Seconds of audio buffered
+    pub buffered_seconds: f32,
+
+    /// Windows completed so far
+    pub windows_completed: usize,
+
+    /// Session age in seconds
+    pub age_seconds: f32,
 }
 
 // ============================================================================
@@ -919,196 +867,89 @@ pub struct BatchIngestResult {
 // ============================================================================
 
 #[cfg(test)]
-mod ingest_tests {
+mod stream_api_tests {
     use super::*;
 
     #[test]
-    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-    fn test_ingest_request_minimal() {
-        let req = IngestRequest {
-            track_id: "track_123".to_string(),
-            metadata: IngestMetadata {
-                name: "Test Song".to_string(),
-                artists: vec![],
-                album: None,
-                genres: vec![],
+    #[cfg(feature = "inference")]
+    fn test_start_stream_request() {
+        let json = r#"{
+            "track_id": "spotify:track:abc123",
+            "metadata": {
+                "name": "Bohemian Rhapsody",
+                "artists": ["Queen"],
+                "album": "A Night at the Opera",
+                "genres": ["Rock"]
             },
-            audio: None,
-            classify_mood: true,
-            mood_tiers: vec![MoodTier::Primary],
-            mood_top_k: 3,
-            include_va: true,
-            skip_storage: false,
-        };
+            "format": "pcm_s16_le",
+            "sample_rate": 44100,
+            "channels": 2
+        }"#;
 
-        // Test JSON serialization
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("track_123"));
-        assert!(json.contains("Test Song"));
-
-        let decoded: IngestRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.track_id, "track_123");
-        assert!(decoded.classify_mood);
+        let req: StartStreamRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.track_id, "spotify:track:abc123");
+        assert_eq!(req.metadata.name, "Bohemian Rhapsody");
+        assert_eq!(req.sample_rate, 44100);
+        assert_eq!(req.channels, 2);
     }
 
     #[test]
-    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-    fn test_ingest_request_full() {
-        let req = IngestRequest {
-            track_id: "track_456".to_string(),
-            metadata: IngestMetadata {
-                name: "Full Song".to_string(),
-                artists: vec!["Artist 1".to_string(), "Artist 2".to_string()],
-                album: Some("Album Name".to_string()),
-                genres: vec!["rock".to_string(), "indie".to_string()],
-            },
-            audio: None, // Audio requires bytes, skip for JSON test
-            classify_mood: false,
-            mood_tiers: vec![MoodTier::Primary, MoodTier::Refined],
-            mood_top_k: 5,
-            include_va: false,
-            skip_storage: true,
+    #[cfg(feature = "inference")]
+    fn test_start_stream_response() {
+        let resp = StartStreamResponse {
+            session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            window_samples: 480000,
         };
 
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("Artist 1"));
-        assert!(json.contains("Album Name"));
-        assert!(json.contains("rock"));
-
-        let decoded: IngestRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.metadata.artists.len(), 2);
-        assert!(!decoded.classify_mood);
-        assert!(decoded.skip_storage);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("550e8400"));
+        assert!(json.contains("480000"));
     }
 
     #[test]
-    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-    fn test_ingest_response_serialization() {
-        let resp = IngestResponse {
+    #[cfg(feature = "inference")]
+    fn test_end_stream_request_defaults() {
+        let json = r#"{}"#;
+        let req: EndStreamRequest = serde_json::from_str(json).unwrap();
+
+        assert!(req.store);
+        assert_eq!(req.min_duration_s, 3.0);
+    }
+
+    #[test]
+    #[cfg(feature = "inference")]
+    fn test_end_stream_response() {
+        let resp = EndStreamResponse {
             track_id: "track_123".to_string(),
-            text_embedding: vec![0.1, 0.2, 0.3],
-            audio_embedding: Some(vec![0.4, 0.5, 0.6]),
-            formatted_text: "Test Song by Artist".to_string(),
-            audio_duration_s: Some(180.5),
+            duration_s: 45.2,
+            windows_processed: 4,
             text_stored: true,
             audio_stored: true,
-            mood: None,
         };
 
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("track_123"));
-        assert!(json.contains("180.5"));
-
-        let decoded: IngestResponse = serde_json::from_str(&json).unwrap();
-        assert!(decoded.text_stored);
-        assert!(decoded.audio_stored);
-        assert_eq!(decoded.audio_duration_s, Some(180.5));
+        assert!(json.contains("45.2"));
+        assert!(json.contains("\"windows_processed\":4"));
     }
 
     #[test]
-    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-    fn test_ingest_response_optional_fields() {
-        let resp = IngestResponse {
-            track_id: "track_123".to_string(),
-            text_embedding: vec![0.1],
-            audio_embedding: None,
-            formatted_text: "Test".to_string(),
-            audio_duration_s: None,
-            text_stored: true,
-            audio_stored: false,
-            mood: None,
+    #[cfg(feature = "inference")]
+    fn test_stream_status_response() {
+        let resp = StreamStatusResponse {
+            session_id: "session_123".to_string(),
+            track_id: "track_456".to_string(),
+            status: StreamSessionStatus::Active,
+            buffered_seconds: 4.5,
+            windows_completed: 0,
+            age_seconds: 12.3,
         };
 
         let json = serde_json::to_string(&resp).unwrap();
-        // Optional None fields should be skipped
-        assert!(!json.contains("audio_embedding"));
-        assert!(!json.contains("audio_duration_s"));
-        assert!(!json.contains("mood"));
-    }
+        assert!(json.contains("active"));
+        assert!(json.contains("4.5"));
 
-    #[test]
-    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-    fn test_batch_ingest_request() {
-        let req = BatchIngestRequest {
-            tracks: vec![
-                IngestTrack {
-                    track_id: "track_1".to_string(),
-                    metadata: IngestMetadata {
-                        name: "Song 1".to_string(),
-                        artists: vec!["Artist".to_string()],
-                        album: None,
-                        genres: vec![],
-                    },
-                    audio: None,
-                    classify_mood: Some(true),
-                },
-                IngestTrack {
-                    track_id: "track_2".to_string(),
-                    metadata: IngestMetadata {
-                        name: "Song 2".to_string(),
-                        artists: vec![],
-                        album: Some("Album".to_string()),
-                        genres: vec!["pop".to_string()],
-                    },
-                    audio: None,
-                    classify_mood: None,
-                },
-            ],
-            classify_mood: true,
-            mood_tiers: vec![MoodTier::Primary],
-            mood_top_k: 3,
-            include_va: true,
-            skip_storage: false,
-        };
-
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("track_1"));
-        assert!(json.contains("track_2"));
-        assert!(json.contains("Song 1"));
-
-        let decoded: BatchIngestRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.tracks.len(), 2);
-    }
-
-    #[test]
-    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
-    fn test_batch_ingest_response() {
-        let resp = BatchIngestResponse {
-            results: vec![
-                BatchIngestResult {
-                    track_id: "track_1".to_string(),
-                    success: true,
-                    error: None,
-                    text_embedding: Some(vec![0.1, 0.2]),
-                    audio_embedding: None,
-                    text_stored: true,
-                    audio_stored: false,
-                    mood: None,
-                },
-                BatchIngestResult {
-                    track_id: "track_2".to_string(),
-                    success: false,
-                    error: Some("Failed to process".to_string()),
-                    text_embedding: None,
-                    audio_embedding: None,
-                    text_stored: false,
-                    audio_stored: false,
-                    mood: None,
-                },
-            ],
-            total: 2,
-            succeeded: 1,
-            failed: 1,
-        };
-
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("track_1"));
-        assert!(json.contains("Failed to process"));
-
-        let decoded: BatchIngestResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.total, 2);
-        assert_eq!(decoded.succeeded, 1);
-        assert_eq!(decoded.failed, 1);
+        let decoded: StreamStatusResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.status, StreamSessionStatus::Active);
     }
 }
 

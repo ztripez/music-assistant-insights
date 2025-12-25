@@ -23,26 +23,30 @@ pub use state::{FileRegistry, FolderState, ScanProgress, WatcherState, WatcherSt
 pub use watcher::{FileEvent, FolderWatcher};
 
 use std::path::Path;
-use uuid::Uuid;
 
-/// Namespace UUID for music-assistant-insights track IDs (DNS namespace)
-const TRACK_ID_NAMESPACE: Uuid = Uuid::from_bytes([
-    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
-]);
-
-/// Generate a deterministic track ID from a file path using UUID v5.
+/// Generate a track ID from file path relative to a base directory.
 ///
-/// The track ID is stable across runs as long as the file path doesn't change.
-/// Uses the canonical (absolute) path to ensure consistency.
-pub fn generate_track_id(file_path: &Path) -> String {
-    // Use canonical/absolute path for consistency
-    let canonical = file_path
-        .canonicalize()
-        .unwrap_or_else(|_| file_path.to_path_buf());
-    let path_str = canonical.to_string_lossy();
+/// The track ID is the relative path from base_path to file_path, using
+/// forward slashes as separators (for cross-platform consistency).
+/// This matches how Music Assistant identifies local tracks.
+///
+/// # Example
+/// ```ignore
+/// let base = Path::new("/music");
+/// let file = Path::new("/music/Artist/Album/song.mp3");
+/// assert_eq!(generate_track_id(file, base), "Artist/Album/song.mp3");
+/// ```
+pub fn generate_track_id(file_path: &Path, base_path: &Path) -> String {
+    // Get relative path from base
+    let relative = file_path
+        .strip_prefix(base_path)
+        .unwrap_or(file_path);
 
-    let uuid = Uuid::new_v5(&TRACK_ID_NAMESPACE, path_str.as_bytes());
-    uuid.to_string()
+    // Convert to string with forward slashes for cross-platform consistency
+    let path_str = relative.to_string_lossy();
+
+    // Normalize path separators to forward slashes
+    path_str.replace('\\', "/")
 }
 
 /// Supported audio file extensions
@@ -116,20 +120,42 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn test_generate_track_id_relative_path() {
+        let base = PathBuf::from("/music");
+        let file = PathBuf::from("/music/Artist/Album/track.mp3");
+        let id = generate_track_id(&file, &base);
+        assert_eq!(id, "Artist/Album/track.mp3");
+    }
+
+    #[test]
     fn test_generate_track_id_deterministic() {
-        let path = PathBuf::from("/music/artist/album/track.mp3");
-        let id1 = generate_track_id(&path);
-        let id2 = generate_track_id(&path);
+        let base = PathBuf::from("/music");
+        let file = PathBuf::from("/music/artist/album/track.mp3");
+        let id1 = generate_track_id(&file, &base);
+        let id2 = generate_track_id(&file, &base);
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn test_generate_track_id_different_paths() {
+        let base = PathBuf::from("/music");
         let path1 = PathBuf::from("/music/artist1/track.mp3");
         let path2 = PathBuf::from("/music/artist2/track.mp3");
-        let id1 = generate_track_id(&path1);
-        let id2 = generate_track_id(&path2);
+        let id1 = generate_track_id(&path1, &base);
+        let id2 = generate_track_id(&path2, &base);
         assert_ne!(id1, id2);
+        assert_eq!(id1, "artist1/track.mp3");
+        assert_eq!(id2, "artist2/track.mp3");
+    }
+
+    #[test]
+    fn test_generate_track_id_normalizes_slashes() {
+        let base = PathBuf::from("/music");
+        // Even with backslashes, output should use forward slashes
+        let file = PathBuf::from("/music/Artist/Album/track.mp3");
+        let id = generate_track_id(&file, &base);
+        assert!(!id.contains('\\'));
+        assert!(id.contains('/'));
     }
 
     #[test]

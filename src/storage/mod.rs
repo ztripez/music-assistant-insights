@@ -50,7 +50,7 @@ pub const AUDIO_COLLECTION: &str = "tracks_audio";
 /// Metadata stored with each embedding
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackMetadata {
-    /// Music Assistant item_id
+    /// Music Assistant item_id (relative path for local files)
     pub track_id: String,
     /// Track name
     pub name: String,
@@ -60,6 +60,9 @@ pub struct TrackMetadata {
     pub album: Option<String>,
     /// Genre tags
     pub genres: Vec<String>,
+    /// Absolute file path (for scanner-ingested tracks)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
     /// Unix timestamp of last update
     pub updated_at: i64,
 }
@@ -73,6 +76,7 @@ impl TrackMetadata {
             artists: Vec::new(),
             album: None,
             genres: Vec::new(),
+            file_path: None,
             updated_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -95,6 +99,12 @@ impl TrackMetadata {
     /// Builder method to add genres
     pub fn with_genres(mut self, genres: Vec<String>) -> Self {
         self.genres = genres;
+        self
+    }
+
+    /// Builder method to add file path
+    pub fn with_file_path(mut self, path: impl Into<String>) -> Self {
+        self.file_path = Some(path.into());
         self
     }
 }

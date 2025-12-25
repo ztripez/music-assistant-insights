@@ -2,10 +2,11 @@
 
 mod embed;
 mod extractors;
-mod ingest;
 mod management;
 mod mood;
 mod routes;
+#[cfg(feature = "inference")]
+mod stream;
 mod tracks;
 #[cfg(feature = "watcher")]
 mod watcher;
@@ -30,6 +31,9 @@ use crate::storage::VectorStorage;
 #[cfg(feature = "watcher")]
 use crate::watcher::WatcherService;
 
+#[cfg(feature = "inference")]
+use stream::{SharedStreamManager, StreamSessionManager};
+
 /// Type alias for boxed storage implementation
 #[cfg(any(feature = "storage", feature = "storage-file"))]
 pub type BoxedStorage = Box<dyn VectorStorage>;
@@ -48,6 +52,9 @@ pub struct AppState {
     pub storage: Option<Arc<BoxedStorage>>,
     #[cfg(feature = "watcher")]
     pub watcher: Arc<RwLock<Option<WatcherService>>>,
+    /// Streaming session manager
+    #[cfg(feature = "inference")]
+    pub stream_manager: SharedStreamManager,
     /// Server start time for uptime calculation
     pub started_at: Instant,
 }
@@ -66,6 +73,8 @@ impl AppState {
             storage: None,
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
+            #[cfg(feature = "inference")]
+            stream_manager: Arc::new(RwLock::new(StreamSessionManager::new())),
             started_at: Instant::now(),
         }
     }
@@ -82,6 +91,7 @@ impl AppState {
             storage: None,
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
+            stream_manager: Arc::new(RwLock::new(StreamSessionManager::new())),
             started_at: Instant::now(),
         }
     }
@@ -100,6 +110,8 @@ impl AppState {
             storage: Some(Arc::new(storage)),
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
+            #[cfg(feature = "inference")]
+            stream_manager: Arc::new(RwLock::new(StreamSessionManager::new())),
             started_at: Instant::now(),
         }
     }
@@ -120,6 +132,7 @@ impl AppState {
             storage: Some(Arc::new(storage)),
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
+            stream_manager: Arc::new(RwLock::new(StreamSessionManager::new())),
             started_at: Instant::now(),
         }
     }
@@ -170,6 +183,7 @@ impl AppState {
 }
 
 /// Creates the application router with all routes configured
+#[allow(unused_mut)]
 pub fn create_router(state: AppState) -> Router {
     let mut api_routes = Router::new()
         .route("/health", get(routes::health))
@@ -196,12 +210,20 @@ pub fn create_router(state: AppState) -> Router {
         // Batch operations
         .route("/tracks/batch-upsert", post(tracks::batch_upsert))
         .route("/tracks/batch-embed-text", post(tracks::batch_embed_text))
-        // Unified ingestion endpoints
-        .route("/tracks/ingest", post(ingest::ingest))
-        .route("/tracks/batch-ingest", post(ingest::batch_ingest))
         // Mood classification endpoints
         .route("/mood/classify", post(mood::classify_mood))
         .route("/mood/list", get(mood::list_moods));
+
+    // Streaming ingestion endpoints (when inference feature is enabled)
+    #[cfg(feature = "inference")]
+    {
+        api_routes = api_routes
+            .route("/stream/start", post(stream::start_stream))
+            .route("/stream/{session_id}/frames", post(stream::stream_frames))
+            .route("/stream/{session_id}/end", post(stream::end_stream))
+            .route("/stream/{session_id}", delete(stream::abort_stream))
+            .route("/stream/{session_id}/status", get(stream::stream_status));
+    }
 
     // Watcher endpoints (when feature is enabled)
     #[cfg(feature = "watcher")]

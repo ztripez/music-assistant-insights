@@ -8,6 +8,15 @@ use super::config::WatchedFolder;
 use super::state::FileRegistry;
 use super::AUDIO_EXTENSIONS;
 
+/// A scanned file with its base path for relative ID generation
+#[derive(Debug, Clone)]
+pub struct ScannedFile {
+    /// Absolute path to the audio file
+    pub path: PathBuf,
+    /// Base path of the watched folder (for generating relative track IDs)
+    pub base_path: PathBuf,
+}
+
 /// Folder scanner for discovering audio files
 pub struct FolderScanner {
     /// Allowed file extensions (empty = all supported)
@@ -26,7 +35,7 @@ impl FolderScanner {
         folders: &[WatchedFolder],
         registry: &FileRegistry,
         force_rescan: bool,
-    ) -> Vec<PathBuf> {
+    ) -> Vec<ScannedFile> {
         let mut files_to_process = Vec::new();
 
         for folder in folders.iter().filter(|f| f.enabled) {
@@ -54,8 +63,9 @@ impl FolderScanner {
         folder: &WatchedFolder,
         registry: &FileRegistry,
         force_rescan: bool,
-    ) -> Vec<PathBuf> {
+    ) -> Vec<ScannedFile> {
         let path = std::path::Path::new(&folder.path);
+        let base_path = path.to_path_buf();
         let mut files = Vec::new();
 
         let walker = if folder.recursive {
@@ -78,7 +88,10 @@ impl FolderScanner {
                 continue;
             }
 
-            files.push(path_buf);
+            files.push(ScannedFile {
+                path: path_buf,
+                base_path: base_path.clone(),
+            });
         }
 
         tracing::info!(

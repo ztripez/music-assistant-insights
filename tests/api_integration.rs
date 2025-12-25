@@ -111,20 +111,22 @@ async fn test_embed_text_without_model() {
 }
 
 #[tokio::test]
-async fn test_ingest_without_model() {
+async fn test_stream_start_without_model() {
     let server = create_test_server();
 
-    // Try to ingest without a model loaded
+    // Try to start streaming without a model loaded
     let response = server
-        .post("/api/v1/tracks/ingest")
-        .content_type("application/msgpack")
-        .bytes(msgpack_bytes(&serde_json::json!({
+        .post("/api/v1/stream/start")
+        .json(&serde_json::json!({
             "track_id": "test_123",
             "metadata": {
                 "name": "Test Song",
                 "artists": ["Artist"]
-            }
-        })))
+            },
+            "format": "pcm_s16_le",
+            "sample_rate": 44100,
+            "channels": 2
+        }))
         .await;
 
     // Should fail because no model is loaded

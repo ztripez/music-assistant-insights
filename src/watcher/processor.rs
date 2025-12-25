@@ -51,13 +51,17 @@ impl TrackProcessor {
     }
 
     /// Process a single audio file
-    pub async fn process_file(&self, path: &Path) -> Result<ProcessedTrack, WatcherError> {
+    ///
+    /// # Arguments
+    /// * `path` - Absolute path to the audio file
+    /// * `base_path` - Base directory path (track_id will be relative to this)
+    pub async fn process_file(&self, path: &Path, base_path: &Path) -> Result<ProcessedTrack, WatcherError> {
         let path_str = path.to_string_lossy().to_string();
         info!(path = %path_str, "Processing audio file");
 
-        // Generate track ID from path
-        let track_id = generate_track_id(path);
-        debug!(track_id = %track_id, "Generated track ID");
+        // Generate track ID from relative path (matches Music Assistant's item_id)
+        let track_id = generate_track_id(path, base_path);
+        debug!(track_id = %track_id, "Generated track ID (relative path)");
 
         // Extract metadata
         let metadata = ExtractedMetadata::from_file(path)?;
@@ -138,7 +142,8 @@ impl TrackProcessor {
         if let Some(ref storage) = self.storage {
             let mut track_meta = TrackMetadata::new(track_id.clone(), text_metadata.name.clone())
                 .with_artists(text_metadata.artists.clone())
-                .with_genres(text_metadata.genres.clone());
+                .with_genres(text_metadata.genres.clone())
+                .with_file_path(path_str.clone());
 
             if let Some(ref album) = text_metadata.album {
                 track_meta = track_meta.with_album(album.clone());

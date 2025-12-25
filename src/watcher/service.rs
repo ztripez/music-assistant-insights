@@ -12,7 +12,7 @@ use crate::storage::VectorStorage;
 
 use super::config::{WatchedFolder, WatcherConfig};
 use super::processor::TrackProcessor;
-use super::scanner::FolderScanner;
+use super::scanner::{FolderScanner, ScannedFile};
 use super::state::{FileRegistry, FolderState, ScanProgress, WatcherState, WatcherStats, WatcherStatus};
 use super::watcher::{FileEvent, FolderWatcher};
 use super::WatcherError;
@@ -295,7 +295,7 @@ impl WatcherService {
                             }
                             WatcherCommand::ProcessFile(path) => {
                                 if !paused {
-                                    Self::process_single_file(&path, &registry, &processor, &state, &event_tx).await;
+                                    Self::process_single_file(&path, &config, &registry, &processor, &state, &event_tx).await;
                                 }
                             }
                             WatcherCommand::Start => {
@@ -313,7 +313,7 @@ impl WatcherService {
                         match event {
                             FileEvent::Created(path) => {
                                 debug!(path = ?path, "File created/modified");
-                                Self::process_single_file(&path, &registry, &processor, &state, &event_tx).await;
+                                Self::process_single_file(&path, &config, &registry, &processor, &state, &event_tx).await;
                             }
                             FileEvent::Removed(path) => {
                                 debug!(path = ?path, "File removed");
@@ -390,31 +390,31 @@ impl WatcherService {
         let mut succeeded = 0;
         let mut failed = 0;
 
-        for (i, path) in files.iter().enumerate() {
+        for (i, scanned_file) in files.iter().enumerate() {
             // Update progress
             {
                 let mut state = state.write().await;
                 if let Some(ref mut progress) = state.current_scan {
-                    progress.current_file = Some(path.to_string_lossy().to_string());
+                    progress.current_file = Some(scanned_file.path.to_string_lossy().to_string());
                 }
             }
 
-            match processor.process_file(path).await {
+            match processor.process_file(&scanned_file.path, &scanned_file.base_path).await {
                 Ok(result) => {
                     // Register in file registry
                     let mut reg = registry.write().await;
-                    reg.register_file(path.clone(), result.track_id.clone());
+                    reg.register_file(scanned_file.path.clone(), result.track_id.clone());
 
                     let _ = event_tx.send(WatcherEvent::FileProcessed {
-                        path: path.clone(),
+                        path: scanned_file.path.clone(),
                         track_id: result.track_id,
                     });
                     succeeded += 1;
                 }
                 Err(e) => {
-                    warn!(path = ?path, error = %e, "Failed to process file");
+                    warn!(path = ?scanned_file.path, error = %e, "Failed to process file");
                     let _ = event_tx.send(WatcherEvent::FileError {
-                        path: path.clone(),
+                        path: scanned_file.path.clone(),
                         error: e.to_string(),
                     });
                     failed += 1;
@@ -461,12 +461,25 @@ impl WatcherService {
     /// Process a single file
     async fn process_single_file(
         path: &PathBuf,
+        config: &WatcherConfig,
         registry: &Arc<RwLock<FileRegistry>>,
         processor: &TrackProcessor,
         state: &Arc<RwLock<WatcherState>>,
         event_tx: &broadcast::Sender<WatcherEvent>,
     ) {
-        match processor.process_file(path).await {
+        // Find the base path for this file from configured folders
+        let base_path = config
+            .folders
+            .iter()
+            .filter(|f| f.enabled)
+            .find(|f| path.starts_with(&f.path))
+            .map(|f| PathBuf::from(&f.path))
+            .unwrap_or_else(|| {
+                // Fallback: use parent directory
+                path.parent().map(|p| p.to_path_buf()).unwrap_or_default()
+            });
+
+        match processor.process_file(path, &base_path).await {
             Ok(result) => {
                 // Register in file registry
                 let mut reg = registry.write().await;

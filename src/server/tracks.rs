@@ -17,7 +17,9 @@ use crate::types::{
     EmbedTextAndStoreResponse,
 };
 
+#[cfg(feature = "storage")]
 use super::extractors::MsgPackExtractor;
+#[cfg(feature = "storage")]
 use super::routes::MsgPack;
 use super::AppState;
 
