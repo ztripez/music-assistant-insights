@@ -25,7 +25,7 @@ pub async fn classify_mood(
     // Get the embedding from request or storage
     let embedding = if let Some(emb) = req.embedding {
         emb
-    } else if let Some(track_id) = req.track_id {
+    } else if let Some(_track_id) = req.track_id {
         // Lookup from storage
         #[cfg(any(feature = "storage", feature = "storage-file"))]
         {
@@ -33,13 +33,13 @@ pub async fn classify_mood(
 
             if let Some(ref storage) = state.storage {
                 let stored = storage
-                    .get(TEXT_COLLECTION, &track_id)
+                    .get(TEXT_COLLECTION, &_track_id)
                     .await
                     .map_err(|e| AppError::Internal(format!("Storage error: {e}")))?;
 
                 stored
                     .map(|s| s.embedding)
-                    .ok_or_else(|| AppError::NotFound(format!("Track {} not found", track_id)))?
+                    .ok_or_else(|| AppError::NotFound(format!("Track {} not found", _track_id)))?
             } else {
                 return Err(AppError::Internal("Storage not configured".to_string()));
             }

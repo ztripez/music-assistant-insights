@@ -89,7 +89,7 @@ impl AudioData {
                         } else {
                             i32::from_le_bytes([chunk[0], chunk[1], chunk[2], 0x00])
                         };
-                        sample as f32 / 8388608.0 // 2^23
+                        sample as f32 / 8_388_608.0 // 2^23
                     })
                     .collect())
             }

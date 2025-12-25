@@ -134,7 +134,7 @@ pub async fn audio_embed(
     );
 
     // Generate embedding using the model
-    let embedding = tokio::task::spawn_blocking({ move || model.audio_embedding(&audio_data) })
+    let embedding = tokio::task::spawn_blocking(move || model.audio_embedding(&audio_data))
         .await
         .map_err(|e| {
             error!(error = %e, "Audio embedding task panicked");

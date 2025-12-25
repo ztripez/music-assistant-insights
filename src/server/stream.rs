@@ -233,7 +233,7 @@ impl StreamSession {
                         } else {
                             i32::from_le_bytes([chunk[0], chunk[1], chunk[2], 0x00])
                         };
-                        sample as f32 / 8388608.0
+                        sample as f32 / 8_388_608.0
                     })
                     .collect())
             }
@@ -735,6 +735,7 @@ pub async fn end_stream(
     let windows_processed = session.windows_completed();
 
     // Finalize and get audio embedding
+    #[allow(unused_variables)]
     let audio_embedding = match session.finalize(&model, request.min_duration_s) {
         Ok(emb) => emb,
         Err(e) => {
@@ -750,6 +751,7 @@ pub async fn end_stream(
 
     // Generate text embedding from metadata (needs reference first)
     let text = format_metadata_text(&session.metadata);
+    #[allow(unused_variables)]
     let text_embedding = match model.text_embedding(&text) {
         Ok(emb) => emb,
         Err(e) => {
@@ -763,10 +765,13 @@ pub async fn end_stream(
         }
     };
 
+    #[allow(unused_mut)]
     let mut text_stored = false;
+    #[allow(unused_mut)]
     let mut audio_stored = false;
 
     // Store embeddings if requested
+    #[cfg(any(feature = "storage", feature = "storage-file"))]
     if request.store {
         if let Some(ref storage) = state.storage {
             use crate::storage::{TrackMetadata, AUDIO_COLLECTION, TEXT_COLLECTION};
