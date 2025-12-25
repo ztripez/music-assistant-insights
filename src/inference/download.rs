@@ -17,6 +17,43 @@ use uuid::Uuid;
 use super::InferenceError;
 use crate::types::{DownloadProgress, DownloadStatus};
 
+/// Sanitize a model ID to prevent path traversal attacks.
+///
+/// Only allows alphanumeric characters, dashes, underscores, and forward slashes.
+/// Rejects any ".." sequences or other potentially dangerous patterns.
+fn sanitize_model_id(model_id: &str) -> Result<String, InferenceError> {
+    // Reject empty model IDs
+    if model_id.is_empty() {
+        return Err(InferenceError::InvalidModelId(
+            "Model ID cannot be empty".to_string(),
+        ));
+    }
+
+    // Reject ".." sequences (path traversal)
+    if model_id.contains("..") {
+        return Err(InferenceError::InvalidModelId(
+            "Model ID cannot contain '..'".to_string(),
+        ));
+    }
+
+    // Only allow safe characters: alphanumeric, dash, underscore, forward slash, dot
+    let safe_id: String = model_id
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '/' || *c == '.')
+        .collect();
+
+    // Ensure we didn't filter out suspicious characters
+    if safe_id != model_id {
+        return Err(InferenceError::InvalidModelId(format!(
+            "Model ID contains invalid characters: {}",
+            model_id
+        )));
+    }
+
+    // Convert slashes to double underscores for safe filesystem use
+    Ok(safe_id.replace('/', "__"))
+}
+
 /// Manages active downloads with progress tracking
 #[derive(Clone)]
 pub struct DownloadManager {
@@ -419,8 +456,22 @@ pub fn get_cache_dir() -> PathBuf {
 }
 
 /// Get the cache directory for a specific model
+///
+/// Uses sanitized model ID to prevent path traversal.
+/// Returns a path under cache dir even for invalid IDs (they just won't match real models).
 pub fn get_model_dir(model_id: &str) -> PathBuf {
-    default_cache_dir().join(model_id.replace('/', "__"))
+    // Use sanitized ID, or fallback to hash for invalid IDs
+    let safe_name = sanitize_model_id(model_id)
+        .unwrap_or_else(|_| format!("invalid_{:x}", md5_hash(model_id)));
+    default_cache_dir().join(safe_name)
+}
+
+/// Simple hash for fallback path names
+fn md5_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Check if a model is downloaded (has required files)
@@ -463,13 +514,16 @@ pub async fn download_model(
     model_id: &str,
     cache_dir: Option<&Path>,
 ) -> Result<ModelPaths, InferenceError> {
+    // Validate model ID to prevent path traversal
+    let safe_model_name = sanitize_model_id(model_id)?;
+
     let config = ModelConfig::from_model_id(model_id);
     let cache_dir = cache_dir
         .map(PathBuf::from)
         .unwrap_or_else(default_cache_dir);
 
-    // Create model-specific cache directory
-    let model_cache = cache_dir.join(model_id.replace('/', "__"));
+    // Create model-specific cache directory using sanitized name
+    let model_cache = cache_dir.join(&safe_model_name);
     fs::create_dir_all(&model_cache).await?;
 
     info!(model_id, ?model_cache, "Checking model cache");

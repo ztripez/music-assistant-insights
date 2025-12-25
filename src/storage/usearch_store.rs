@@ -203,30 +203,25 @@ impl UsearchStorage {
     }
 
     /// Get or create a key for a track ID
+    ///
+    /// Uses a single write lock with entry API to avoid TOCTOU race condition.
     fn get_or_create_key(&self, collection: &str, track_id: &str) -> u64 {
         let (id_map, next_key) = if collection == TEXT_COLLECTION {
-            (
-                &self.text_id_map,
-                &self.text_next_key,
-            )
+            (&self.text_id_map, &self.text_next_key)
         } else {
-            (
-                &self.audio_id_map,
-                &self.audio_next_key,
-            )
+            (&self.audio_id_map, &self.audio_next_key)
         };
 
-        // Check if key already exists
-        if let Some(&key) = id_map.read().unwrap().get(track_id) {
-            return key;
-        }
+        // Use write lock from the start to avoid race condition
+        let mut map = id_map.write().unwrap();
 
-        // Create new key
-        let mut next = next_key.write().unwrap();
-        let key = *next;
-        *next += 1;
-        id_map.write().unwrap().insert(track_id.to_string(), key);
-        key
+        // Use entry API for atomic check-and-insert
+        *map.entry(track_id.to_string()).or_insert_with(|| {
+            let mut next = next_key.write().unwrap();
+            let key = *next;
+            *next += 1;
+            key
+        })
     }
 
     /// Apply filter to search results

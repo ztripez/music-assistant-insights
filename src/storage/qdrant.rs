@@ -100,15 +100,21 @@ impl QdrantStorage {
 
     /// Convert TrackMetadata to Qdrant Payload
     fn metadata_to_payload(metadata: &TrackMetadata) -> Payload {
-        Payload::try_from(json!({
+        let mut payload = json!({
             "track_id": metadata.track_id,
             "name": metadata.name,
             "artists": metadata.artists,
             "album": metadata.album,
             "genres": metadata.genres,
             "updated_at": metadata.updated_at,
-        }))
-        .unwrap_or_default()
+        });
+
+        // Add file_path if present
+        if let Some(ref file_path) = metadata.file_path {
+            payload["file_path"] = json!(file_path);
+        }
+
+        Payload::try_from(payload).unwrap_or_default()
     }
 
     /// Convert Qdrant payload to TrackMetadata
@@ -159,12 +165,18 @@ impl QdrantStorage {
             .and_then(|v| v.as_integer())
             .unwrap_or(0);
 
+        let file_path = payload
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         Ok(TrackMetadata {
             track_id,
             name,
             artists,
             album,
             genres,
+            file_path,
             updated_at,
         })
     }
@@ -200,12 +212,14 @@ impl QdrantStorage {
         if conditions.is_empty() && must_not.is_empty() {
             None
         } else if must_not.is_empty() {
-            Some(Filter::should(conditions))
+            // Use must (AND) - all conditions must match
+            Some(Filter::must(conditions))
         } else if conditions.is_empty() {
             Some(Filter::must_not(must_not))
         } else {
+            // Both positive conditions (AND) and exclusions
             Some(Filter {
-                should: conditions,
+                must: conditions,
                 must_not,
                 ..Default::default()
             })

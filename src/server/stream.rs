@@ -40,6 +40,9 @@ const MIN_SAMPLES_FOR_EMBEDDING: usize = 144000;
 /// Session timeout in seconds (5 minutes)
 const SESSION_TIMEOUT_SECS: u64 = 300;
 
+/// Maximum resampling errors before failing the session
+const MAX_RESAMPLING_ERRORS: usize = 10;
+
 /// Error type for streaming operations
 #[derive(Debug, thiserror::Error)]
 pub enum StreamError {
@@ -54,6 +57,9 @@ pub enum StreamError {
 
     #[error("Resampler error: {0}")]
     ResamplerError(String),
+
+    #[error("Too many resampling errors ({0}), audio quality compromised")]
+    TooManyResamplingErrors(usize),
 
     #[error("Model not loaded")]
     ModelNotLoaded,
@@ -91,6 +97,8 @@ pub struct StreamSession {
     // State
     /// Embeddings from completed windows
     window_embeddings: Vec<Vec<f32>>,
+    /// Count of resampling errors (for quality tracking)
+    resampling_errors: usize,
     /// Current session status
     pub status: StreamSessionStatus,
 
@@ -141,6 +149,7 @@ impl StreamSession {
             resampled_buffer: Vec::with_capacity(WINDOW_SAMPLES),
             resampler,
             window_embeddings: Vec::new(),
+            resampling_errors: 0,
             status: StreamSessionStatus::Active,
             created_at: now,
             last_activity: now,
@@ -245,7 +254,16 @@ impl StreamSession {
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Resampling chunk failed, skipping");
+                        self.resampling_errors += 1;
+                        warn!(
+                            error = %e,
+                            errors = self.resampling_errors,
+                            max = MAX_RESAMPLING_ERRORS,
+                            "Resampling chunk failed"
+                        );
+                        if self.resampling_errors >= MAX_RESAMPLING_ERRORS {
+                            return Err(StreamError::TooManyResamplingErrors(self.resampling_errors));
+                        }
                     }
                 }
             }

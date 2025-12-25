@@ -26,6 +26,10 @@ use super::AppState;
 #[cfg(feature = "storage")]
 use crate::storage::{AUDIO_COLLECTION, EMBEDDING_DIM, TEXT_COLLECTION};
 
+/// Maximum batch size for batch operations (prevents memory exhaustion)
+#[cfg(feature = "storage")]
+const MAX_BATCH_SIZE: usize = 100;
+
 #[cfg(all(feature = "inference", feature = "storage"))]
 use crate::inference::{format_track_metadata, TextTrackMetadata};
 
@@ -398,6 +402,15 @@ pub async fn batch_upsert(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<BatchUpsertRequest>,
 ) -> Result<MsgPack<BatchUpsertResponse>, AppError> {
+    // Validate batch size
+    if req.tracks.len() > MAX_BATCH_SIZE {
+        return Err(AppError::BadRequest(format!(
+            "Batch size {} exceeds maximum of {}",
+            req.tracks.len(),
+            MAX_BATCH_SIZE
+        )));
+    }
+
     let storage = state
         .storage
         .as_ref()
@@ -509,6 +522,15 @@ pub async fn batch_embed_text(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<BatchEmbedTextRequest>,
 ) -> Result<MsgPack<BatchEmbedTextResponse>, AppError> {
+    // Validate batch size
+    if req.tracks.len() > MAX_BATCH_SIZE {
+        return Err(AppError::BadRequest(format!(
+            "Batch size {} exceeds maximum of {}",
+            req.tracks.len(),
+            MAX_BATCH_SIZE
+        )));
+    }
+
     // Acquire read lock and clone model for use in blocking tasks
     let model = {
         let guard = state.model.read().await;

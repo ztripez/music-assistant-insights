@@ -141,6 +141,9 @@ pub enum InferenceError {
     #[error("Model download failed: {0}")]
     DownloadFailed(String),
 
+    #[error("Invalid model ID: {0}")]
+    InvalidModelId(String),
+
     #[error("Invalid audio format: {0}")]
     InvalidAudioFormat(String),
 
@@ -158,6 +161,7 @@ impl From<InferenceError> for AppError {
     fn from(err: InferenceError) -> Self {
         match err {
             InferenceError::InvalidAudioFormat(msg) => AppError::BadRequest(msg),
+            InferenceError::InvalidModelId(msg) => AppError::BadRequest(msg),
             _ => AppError::Internal(err.to_string()),
         }
     }
