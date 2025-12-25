@@ -30,7 +30,7 @@ impl std::fmt::Display for MoodTier {
 /// A mood definition with its classification prompt
 #[derive(Debug, Clone)]
 pub struct MoodPrompt {
-    /// Mood identifier (lowercase, snake_case)
+    /// Mood identifier (lowercase, `snake_case`)
     pub id: &'static str,
     /// Display name
     pub name: &'static str,
@@ -373,9 +373,8 @@ pub fn get_moods_by_tier(tier: MoodTier) -> &'static [MoodPrompt] {
 
 /// Get all moods across all tiers
 pub fn get_all_moods() -> Vec<&'static MoodPrompt> {
-    let mut moods = Vec::with_capacity(
-        PRIMARY_MOODS.len() + REFINED_MOODS.len() + CONTEXTUAL_MOODS.len(),
-    );
+    let mut moods =
+        Vec::with_capacity(PRIMARY_MOODS.len() + REFINED_MOODS.len() + CONTEXTUAL_MOODS.len());
     moods.extend(PRIMARY_MOODS.iter());
     moods.extend(REFINED_MOODS.iter());
     moods.extend(CONTEXTUAL_MOODS.iter());

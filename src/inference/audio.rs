@@ -14,7 +14,7 @@ use super::InferenceError;
 
 /// Target sample rate for CLAP models
 #[allow(dead_code)]
-pub const TARGET_SAMPLE_RATE: u32 = 48000;
+pub const TARGET_SAMPLE_RATE: u32 = 48_000;
 
 /// Audio format enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,7 +318,7 @@ mod tests {
         let bytes = value.to_le_bytes();
         let audio = AudioData {
             format: AudioFormat::PcmF32Le,
-            sample_rate: 48000,
+            sample_rate: 48_000,
             channels: 1,
             data: bytes.to_vec(),
         };

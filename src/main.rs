@@ -34,7 +34,7 @@ struct Cli {
     #[arg(long, env = "INSIGHT_STORAGE__DATA_DIR")]
     data_dir: Option<String>,
 
-    /// Qdrant server URL (e.g., http://localhost:6334 or https://xxx.cloud.qdrant.io:6333)
+    /// Qdrant server URL (e.g., <http://localhost:6334> or <https://xxx.cloud.qdrant.io:6333>)
     #[arg(long, env = "INSIGHT_STORAGE__URL")]
     qdrant_url: Option<String>,
 
@@ -58,19 +58,19 @@ struct Cli {
     #[arg(long, env = "INSIGHT_MODEL__ENABLE_CUDA")]
     cuda: bool,
 
-    /// Enable ROCm acceleration for model inference (AMD GPUs)
+    /// Enable `ROCm` acceleration for model inference (AMD GPUs)
     #[arg(long, env = "INSIGHT_MODEL__ENABLE_ROCM")]
     rocm: bool,
 
-    /// Enable CoreML acceleration for model inference (Apple Silicon/macOS)
+    /// Enable `CoreML` acceleration for model inference (Apple Silicon/macOS)
     #[arg(long, env = "INSIGHT_MODEL__ENABLE_COREML")]
     coreml: bool,
 
-    /// Enable DirectML acceleration for model inference (Windows GPU)
+    /// Enable `DirectML` acceleration for model inference (Windows GPU)
     #[arg(long, env = "INSIGHT_MODEL__ENABLE_DIRECTML")]
     directml: bool,
 
-    /// Enable OpenVINO acceleration for model inference (Intel CPUs/GPUs/VPUs)
+    /// Enable `OpenVINO` acceleration for model inference (Intel CPUs/GPUs/VPUs)
     #[arg(long, env = "INSIGHT_MODEL__ENABLE_OPENVINO")]
     openvino: bool,
 
@@ -95,14 +95,7 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration (env vars) then merge with CLI args
     let mut config = AppConfig::load().unwrap_or_else(|e| {
         warn!("Failed to load config from environment: {e}, using defaults");
-        AppConfig {
-            model: Default::default(),
-            audio: Default::default(),
-            storage: Default::default(),
-            server: Default::default(),
-            #[cfg(feature = "watcher")]
-            watcher: Default::default(),
-        }
+        AppConfig::default()
     });
 
     // CLI args override environment/defaults
@@ -115,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(mode) = cli.storage_mode {
         config.storage.mode = mode.parse().unwrap_or_else(|e| {
             warn!("Invalid storage mode '{}': {}, using default", mode, e);
-            Default::default()
+            insight_sidecar::config::StorageMode::default()
         });
     }
     if let Some(data_dir) = cli.data_dir {
@@ -199,13 +192,19 @@ async fn main() -> anyhow::Result<()> {
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
     info!("╔═══════════════════════════════════════════════════════╗");
-    info!("║     Music Assistant Insight Sidecar v{}          ║", version);
+    info!(
+        "║     Music Assistant Insight Sidecar v{}          ║",
+        version
+    );
     info!("║     ML-powered audio/text embeddings for MA           ║");
     info!("╚═══════════════════════════════════════════════════════╝");
 }
 
 /// Create application state, loading the ML model and storage if features are enabled
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[cfg(all(
+    feature = "inference",
+    any(feature = "storage", feature = "storage-file")
+))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
     // Load model first
     let model_id = config.model.name.clone();
@@ -222,7 +221,10 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
     }
 }
 
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[cfg(all(
+    feature = "inference",
+    any(feature = "storage", feature = "storage-file")
+))]
 async fn load_model(config: &AppConfig) -> Option<insight_sidecar::inference::ClapModel> {
     use insight_sidecar::inference::{download_model, ClapModel, DeviceConfig};
 
@@ -238,7 +240,11 @@ async fn load_model(config: &AppConfig) -> Option<insight_sidecar::inference::Cl
                 directml: config.model.enable_directml,
                 openvino: config.model.enable_openvino,
             };
-            match tokio::task::spawn_blocking(move || ClapModel::load_with_config(&paths, device_config)).await {
+            match tokio::task::spawn_blocking(move || {
+                ClapModel::load_with_config(&paths, device_config)
+            })
+            .await
+            {
                 Ok(Ok(model)) => {
                     info!(device = %model.device(), "CLAP model loaded successfully");
                     Some(model)
@@ -263,7 +269,10 @@ async fn load_model(config: &AppConfig) -> Option<insight_sidecar::inference::Cl
     }
 }
 
-#[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+#[cfg(all(
+    feature = "inference",
+    any(feature = "storage", feature = "storage-file")
+))]
 async fn connect_storage(config: &AppConfig) -> Option<server::BoxedStorage> {
     use insight_sidecar::config::StorageMode;
     use insight_sidecar::storage::VectorStorage;
@@ -345,7 +354,10 @@ async fn connect_storage(config: &AppConfig) -> Option<server::BoxedStorage> {
 }
 
 /// Create application state with inference only (no storage features)
-#[cfg(all(feature = "inference", not(any(feature = "storage", feature = "storage-file"))))]
+#[cfg(all(
+    feature = "inference",
+    not(any(feature = "storage", feature = "storage-file"))
+))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
     use insight_sidecar::inference::{download_model, ClapModel, DeviceConfig};
 
@@ -362,7 +374,11 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
                 directml: config.model.enable_directml,
                 openvino: config.model.enable_openvino,
             };
-            match tokio::task::spawn_blocking(move || ClapModel::load_with_config(&paths, device_config)).await {
+            match tokio::task::spawn_blocking(move || {
+                ClapModel::load_with_config(&paths, device_config)
+            })
+            .await
+            {
                 Ok(Ok(model)) => {
                     info!(device = %model.device(), "CLAP model loaded successfully");
                     server::AppState::with_model(config, model, model_id)
@@ -388,7 +404,10 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
 }
 
 /// Create application state with storage only (no inference)
-#[cfg(all(any(feature = "storage", feature = "storage-file"), not(feature = "inference")))]
+#[cfg(all(
+    any(feature = "storage", feature = "storage-file"),
+    not(feature = "inference")
+))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
     use insight_sidecar::config::StorageMode;
     use insight_sidecar::storage::VectorStorage;
@@ -475,6 +494,7 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
 
 /// Create application state without optional features
 #[cfg(not(any(feature = "inference", feature = "storage", feature = "storage-file")))]
+#[allow(clippy::unused_async)]
 async fn create_app_state(config: AppConfig) -> server::AppState {
     info!("No optional features enabled");
     server::AppState::new(config)
@@ -494,8 +514,7 @@ fn init_logging(verbose: u8, quiet: bool) {
 
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| level.into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| level.into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();

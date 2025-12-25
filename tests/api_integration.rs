@@ -183,9 +183,7 @@ async fn test_mood_classify_without_model() {
 async fn test_delete_nonexistent_model() {
     let server = create_test_server();
 
-    let response = server
-        .delete("/api/v1/models/nonexistent/model")
-        .await;
+    let response = server.delete("/api/v1/models/nonexistent/model").await;
 
     // Should return not found or error
     response.assert_status_not_ok();
@@ -195,9 +193,7 @@ async fn test_delete_nonexistent_model() {
 async fn test_load_nonexistent_model() {
     let server = create_test_server();
 
-    let response = server
-        .post("/api/v1/models/nonexistent%2Fmodel/load")
-        .await;
+    let response = server.post("/api/v1/models/nonexistent%2Fmodel/load").await;
 
     // Should return error (model not downloaded)
     response.assert_status_not_ok();

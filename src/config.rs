@@ -7,7 +7,7 @@ use std::path::PathBuf;
 ///
 /// All settings can be configured via environment variables with the `INSIGHT_` prefix.
 /// For example: `INSIGHT_PORT=8096`, `INSIGHT_ENABLE_CUDA=true`
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     /// Model configuration
     #[serde(default)]
@@ -41,19 +41,19 @@ pub struct ModelConfig {
     #[serde(default)]
     pub enable_cuda: bool,
 
-    /// Enable ROCm acceleration (AMD GPUs)
+    /// Enable `ROCm` acceleration (AMD GPUs)
     #[serde(default)]
     pub enable_rocm: bool,
 
-    /// Enable CoreML acceleration (Apple Silicon/macOS)
+    /// Enable `CoreML` acceleration (Apple Silicon/macOS)
     #[serde(default)]
     pub enable_coreml: bool,
 
-    /// Enable DirectML acceleration (Windows GPU)
+    /// Enable `DirectML` acceleration (Windows GPU)
     #[serde(default)]
     pub enable_directml: bool,
 
-    /// Enable OpenVINO acceleration (Intel CPUs/GPUs/VPUs)
+    /// Enable `OpenVINO` acceleration (Intel CPUs/GPUs/VPUs)
     #[serde(default)]
     pub enable_openvino: bool,
 }
@@ -130,7 +130,7 @@ impl std::str::FromStr for StorageMode {
         match s.to_lowercase().as_str() {
             "file" | "usearch" => Ok(StorageMode::File),
             "qdrant" => Ok(StorageMode::Qdrant),
-            _ => Err(format!("Unknown storage mode: {}. Use 'file' or 'qdrant'", s)),
+            _ => Err(format!("Unknown storage mode: {s}. Use 'file' or 'qdrant'")),
         }
     }
 }
@@ -145,7 +145,7 @@ pub struct StorageConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
 
-    /// Qdrant server URL (e.g., http://localhost:6334 or https://xxx.cloud.qdrant.io:6333)
+    /// Qdrant server URL (e.g., <http://localhost:6334> or <https://xxx.cloud.qdrant.io:6333>)
     #[serde(default = "default_qdrant_url")]
     pub url: String,
 
@@ -176,9 +176,10 @@ impl Default for StorageConfig {
 }
 
 fn default_data_dir() -> String {
-    directories::ProjectDirs::from("com", "music-assistant", "insight-sidecar")
-        .map(|dirs| dirs.data_dir().to_string_lossy().to_string())
-        .unwrap_or_else(|| "./data".to_string())
+    directories::ProjectDirs::from("com", "music-assistant", "insight-sidecar").map_or_else(
+        || "./data".to_string(),
+        |dirs| dirs.data_dir().to_string_lossy().to_string(),
+    )
 }
 
 fn default_qdrant_url() -> String {
@@ -209,19 +210,6 @@ impl Default for ServerConfig {
     }
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            model: ModelConfig::default(),
-            audio: AudioConfig::default(),
-            storage: StorageConfig::default(),
-            server: ServerConfig::default(),
-            #[cfg(feature = "watcher")]
-            watcher: crate::watcher::WatcherConfig::default(),
-        }
-    }
-}
-
 fn default_host() -> String {
     "0.0.0.0".to_string()
 }
@@ -245,7 +233,7 @@ impl AppConfig {
     /// Environment variables should be prefixed with `INSIGHT_` and use
     /// double underscores for nested values:
     /// - `INSIGHT_MODEL__NAME` -> model.name
-    /// - `INSIGHT_MODEL__ENABLE_CUDA` -> model.enable_cuda
+    /// - `INSIGHT_MODEL__ENABLE_CUDA` -> `model.enable_cuda`
     /// - `INSIGHT_SERVER__PORT` -> server.port
     pub fn load() -> Result<Self, ConfigError> {
         let config = Config::builder()
@@ -261,9 +249,10 @@ impl AppConfig {
 
     /// Get the path to the config file
     pub fn config_file_path() -> PathBuf {
-        directories::ProjectDirs::from("com", "music-assistant", "insight-sidecar")
-            .map(|dirs| dirs.config_dir().join("config.toml"))
-            .unwrap_or_else(|| PathBuf::from("./config.toml"))
+        directories::ProjectDirs::from("com", "music-assistant", "insight-sidecar").map_or_else(
+            || PathBuf::from("./config.toml"),
+            |dirs| dirs.config_dir().join("config.toml"),
+        )
     }
 
     /// Load configuration from file, falling back to defaults
@@ -344,7 +333,10 @@ mod tests {
     fn test_storage_mode_from_str() {
         assert_eq!("file".parse::<StorageMode>().unwrap(), StorageMode::File);
         assert_eq!("usearch".parse::<StorageMode>().unwrap(), StorageMode::File);
-        assert_eq!("qdrant".parse::<StorageMode>().unwrap(), StorageMode::Qdrant);
+        assert_eq!(
+            "qdrant".parse::<StorageMode>().unwrap(),
+            StorageMode::Qdrant
+        );
         assert!("invalid".parse::<StorageMode>().is_err());
     }
 

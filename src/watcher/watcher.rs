@@ -54,8 +54,7 @@ impl FolderWatcher {
                             }
 
                             let file_event = match event.kind {
-                                DebouncedEventKind::Any
-                                | DebouncedEventKind::AnyContinuous => {
+                                DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous => {
                                     FileEvent::Created(event.path)
                                 }
                                 _ => continue, // Skip unknown event kinds

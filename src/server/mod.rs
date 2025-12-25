@@ -121,7 +121,10 @@ impl AppState {
     }
 
     /// Create AppState with both model and storage
-    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+    #[cfg(all(
+        feature = "inference",
+        any(feature = "storage", feature = "storage-file")
+    ))]
     pub fn with_model_and_storage(
         config: AppConfig,
         model: ClapModel,
@@ -239,7 +242,10 @@ pub fn create_router(state: AppState) -> Router {
             .route("/watcher/pause", post(watcher::pause))
             .route("/watcher/resume", post(watcher::resume))
             .route("/watcher/scan", post(watcher::trigger_scan))
-            .route("/watcher/folders", get(watcher::list_folders).post(watcher::add_folder))
+            .route(
+                "/watcher/folders",
+                get(watcher::list_folders).post(watcher::add_folder),
+            )
             .route("/watcher/folders/:path", delete(watcher::remove_folder));
     }
 

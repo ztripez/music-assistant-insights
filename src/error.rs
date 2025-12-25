@@ -69,20 +69,14 @@ impl IntoResponse for AppError {
         };
 
         // Try to serialize as msgpack, fall back to JSON
-        match rmp_serde::to_vec(&body) {
-            Ok(bytes) => (
-                status,
-                [("content-type", "application/msgpack")],
-                bytes,
-            )
-                .into_response(),
-            Err(_) => {
-                // Fallback to JSON if msgpack fails
-                let json = serde_json::to_string(&body).unwrap_or_else(|_| {
-                    r#"{"error":{"code":"SERIALIZATION_ERROR","message":"Failed to serialize error"}}"#.to_string()
-                });
-                (status, [("content-type", "application/json")], json).into_response()
-            }
+        if let Ok(bytes) = rmp_serde::to_vec(&body) {
+            (status, [("content-type", "application/msgpack")], bytes).into_response()
+        } else {
+            // Fallback to JSON if msgpack fails
+            let json = serde_json::to_string(&body).unwrap_or_else(|_| {
+                r#"{"error":{"code":"SERIALIZATION_ERROR","message":"Failed to serialize error"}}"#.to_string()
+            });
+            (status, [("content-type", "application/json")], json).into_response()
         }
     }
 }

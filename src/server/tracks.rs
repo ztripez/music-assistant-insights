@@ -204,16 +204,22 @@ pub async fn get_track(
     })?;
 
     // Check audio collection
-    let audio_result = storage.get(AUDIO_COLLECTION, &track_id).await.map_err(|e| {
-        error!(error = %e, "Failed to get audio embedding");
-        AppError::Internal(e.to_string())
-    })?;
+    let audio_result = storage
+        .get(AUDIO_COLLECTION, &track_id)
+        .await
+        .map_err(|e| {
+            error!(error = %e, "Failed to get audio embedding");
+            AppError::Internal(e.to_string())
+        })?;
 
     let has_text = text_result.is_some();
     let has_audio = audio_result.is_some();
 
     if !has_text && !has_audio {
-        return Err(AppError::NotFound(format!("Track '{}' not found", track_id)));
+        return Err(AppError::NotFound(format!(
+            "Track '{}' not found",
+            track_id
+        )));
     }
 
     // Get metadata from whichever collection has data
@@ -359,7 +365,10 @@ pub async fn embed_text_and_store(
         AppError::from(e)
     })?;
 
-    debug!(embedding_dim = embedding.data().len(), "Text embedding generated");
+    debug!(
+        embedding_dim = embedding.data().len(),
+        "Text embedding generated"
+    );
 
     // Build storage metadata
     let storage_metadata = TrackMetadata::new(req.track_id.clone(), req.metadata.name)
@@ -608,7 +617,12 @@ pub async fn batch_embed_text(
 
                 // Store the embedding
                 match storage
-                    .upsert(TEXT_COLLECTION, &track_id, embedding.data(), storage_metadata)
+                    .upsert(
+                        TEXT_COLLECTION,
+                        &track_id,
+                        embedding.data(),
+                        storage_metadata,
+                    )
                     .await
                 {
                     Ok(_) => {

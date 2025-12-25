@@ -100,11 +100,7 @@ impl serde::Serialize for Embedding {
         S: serde::Serializer,
     {
         // Serialize as raw bytes for efficiency
-        let bytes: Vec<u8> = self
-            .data
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = self.data.iter().flat_map(|f| f.to_le_bytes()).collect();
         serializer.serialize_bytes(&bytes)
     }
 }

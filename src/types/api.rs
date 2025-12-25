@@ -470,7 +470,7 @@ pub struct ListModelsResponse {
 /// Request to download a model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadModelRequest {
-    /// Model ID to download (HuggingFace format: owner/model-name)
+    /// Model ID to download (`HuggingFace` format: owner/model-name)
     pub model_id: String,
 }
 
@@ -551,16 +551,16 @@ pub struct UpdateModelConfig {
     /// Enable CUDA acceleration (NVIDIA GPUs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_cuda: Option<bool>,
-    /// Enable ROCm acceleration (AMD GPUs)
+    /// Enable `ROCm` acceleration (AMD GPUs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_rocm: Option<bool>,
-    /// Enable CoreML acceleration (Apple Silicon/macOS)
+    /// Enable `CoreML` acceleration (Apple Silicon/macOS)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_coreml: Option<bool>,
-    /// Enable DirectML acceleration (Windows GPU)
+    /// Enable `DirectML` acceleration (Windows GPU)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_directml: Option<bool>,
-    /// Enable OpenVINO acceleration (Intel CPUs/GPUs/VPUs)
+    /// Enable `OpenVINO` acceleration (Intel CPUs/GPUs/VPUs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_openvino: Option<bool>,
 }
@@ -898,7 +898,7 @@ mod stream_api_tests {
     fn test_start_stream_response() {
         let resp = StartStreamResponse {
             session_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            window_samples: 480000,
+            window_samples: 480_000,
         };
 
         let json = serde_json::to_string(&resp).unwrap();
@@ -909,7 +909,7 @@ mod stream_api_tests {
     #[test]
     #[cfg(feature = "inference")]
     fn test_end_stream_request_defaults() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let req: EndStreamRequest = serde_json::from_str(json).unwrap();
 
         assert!(req.store);

@@ -13,7 +13,9 @@ use crate::storage::VectorStorage;
 use super::config::{WatchedFolder, WatcherConfig};
 use super::processor::TrackProcessor;
 use super::scanner::FolderScanner;
-use super::state::{FileRegistry, FolderState, ScanProgress, WatcherState, WatcherStats, WatcherStatus};
+use super::state::{
+    FileRegistry, FolderState, ScanProgress, WatcherState, WatcherStats, WatcherStatus,
+};
 use super::watcher::{FileEvent, FolderWatcher};
 use super::WatcherError;
 
@@ -50,10 +52,7 @@ pub enum WatcherEvent {
     /// Watcher resumed
     Resumed,
     /// Scan started
-    ScanStarted {
-        folder: String,
-        total_files: usize,
-    },
+    ScanStarted { folder: String, total_files: usize },
     /// Scan progress update
     ScanProgress {
         folder: String,
@@ -67,15 +66,9 @@ pub enum WatcherEvent {
         failed: usize,
     },
     /// File processed successfully
-    FileProcessed {
-        path: PathBuf,
-        track_id: String,
-    },
+    FileProcessed { path: PathBuf, track_id: String },
     /// File processing failed
-    FileError {
-        path: PathBuf,
-        error: String,
-    },
+    FileError { path: PathBuf, error: String },
     /// Folder added
     FolderAdded(String),
     /// Folder removed
@@ -224,13 +217,7 @@ impl WatcherService {
             // Initial scan if configured
             if config.scan_on_startup {
                 Self::perform_scan(
-                    &config,
-                    &state,
-                    &registry,
-                    &scanner,
-                    &processor,
-                    &event_tx,
-                    false,
+                    &config, &state, &registry, &scanner, &processor, &event_tx, false,
                 )
                 .await;
             }
@@ -399,7 +386,10 @@ impl WatcherService {
                 }
             }
 
-            match processor.process_file(&scanned_file.path, &scanned_file.base_path).await {
+            match processor
+                .process_file(&scanned_file.path, &scanned_file.base_path)
+                .await
+            {
                 Ok(result) => {
                     // Register in file registry
                     let mut reg = registry.write().await;

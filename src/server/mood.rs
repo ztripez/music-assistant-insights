@@ -74,9 +74,7 @@ pub async fn classify_mood(
 /// GET /api/v1/mood/list
 ///
 /// List all available mood definitions.
-pub async fn list_moods(
-    State(_state): State<AppState>,
-) -> MsgPack<ListMoodsResponse> {
+pub async fn list_moods(State(_state): State<AppState>) -> MsgPack<ListMoodsResponse> {
     let all_moods = get_all_moods();
 
     let moods: Vec<MoodInfo> = all_moods

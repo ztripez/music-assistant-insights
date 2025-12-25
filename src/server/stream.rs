@@ -36,14 +36,14 @@ struct StreamErrorResponse {
 }
 
 /// Target sample rate for CLAP models
-const TARGET_SAMPLE_RATE: u32 = 48000;
+const TARGET_SAMPLE_RATE: u32 = 48_000;
 
 /// Window size in samples (10 seconds at 48kHz)
-const WINDOW_SAMPLES: usize = 480000;
+const WINDOW_SAMPLES: usize = 480_000;
 
 /// Minimum samples required to generate an embedding (3 seconds at 48kHz)
 #[allow(dead_code)]
-const MIN_SAMPLES_FOR_EMBEDDING: usize = 144000;
+const MIN_SAMPLES_FOR_EMBEDDING: usize = 144_000;
 
 /// Session timeout in seconds (5 minutes)
 const SESSION_TIMEOUT_SECS: u64 = 300;
@@ -165,11 +165,7 @@ impl StreamSession {
     }
 
     /// Process incoming audio frames and return number of new complete windows
-    pub fn process_frames(
-        &mut self,
-        data: &[u8],
-        model: &ClapModel,
-    ) -> Result<usize, StreamError> {
+    pub fn process_frames(&mut self, data: &[u8], model: &ClapModel) -> Result<usize, StreamError> {
         self.last_activity = Instant::now();
 
         // Convert bytes to f32 samples
@@ -270,7 +266,9 @@ impl StreamSession {
                             "Resampling chunk failed"
                         );
                         if self.resampling_errors >= MAX_RESAMPLING_ERRORS {
-                            return Err(StreamError::TooManyResamplingErrors(self.resampling_errors));
+                            return Err(StreamError::TooManyResamplingErrors(
+                                self.resampling_errors,
+                            ));
                         }
                     }
                 }
@@ -459,7 +457,8 @@ impl StreamSessionManager {
             return Err(StreamError::SessionExists(track_id));
         }
 
-        let session = StreamSession::new(track_id.clone(), metadata, format, sample_rate, channels)?;
+        let session =
+            StreamSession::new(track_id.clone(), metadata, format, sample_rate, channels)?;
         let session_id = session.id;
 
         self.track_sessions.insert(track_id, session_id);
@@ -526,7 +525,8 @@ const CLEANUP_INTERVAL_SECS: u64 = 60;
 /// Spawn a background task to periodically clean up timed-out sessions
 pub fn spawn_session_cleanup_task(manager: SharedStreamManager) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
 
         loop {
             interval.tick().await;
@@ -772,7 +772,12 @@ pub async fn end_stream(
             use crate::storage::{TrackMetadata, AUDIO_COLLECTION, TEXT_COLLECTION};
 
             // Move metadata fields from session (avoids clones since we own session)
-            let IngestMetadata { name, artists, album, genres } = session.metadata;
+            let IngestMetadata {
+                name,
+                artists,
+                album,
+                genres,
+            } = session.metadata;
 
             // Build metadata for storage - move fields instead of cloning
             let mut metadata = TrackMetadata::new(track_id.clone(), name)

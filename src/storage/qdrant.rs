@@ -80,13 +80,9 @@ impl QdrantStorage {
             info!(collection = %full_name, dim = EMBEDDING_DIM, "Creating collection");
 
             self.client
-                .create_collection(
-                    CreateCollectionBuilder::new(&full_name)
-                        .vectors_config(VectorParamsBuilder::new(
-                            EMBEDDING_DIM as u64,
-                            Distance::Cosine,
-                        )),
-                )
+                .create_collection(CreateCollectionBuilder::new(&full_name).vectors_config(
+                    VectorParamsBuilder::new(EMBEDDING_DIM as u64, Distance::Cosine),
+                ))
                 .await
                 .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
 
@@ -482,7 +478,11 @@ impl VectorStorage for QdrantStorage {
         Ok(())
     }
 
-    async fn delete_batch(&self, collection: &str, track_ids: &[String]) -> Result<(), StorageError> {
+    async fn delete_batch(
+        &self,
+        collection: &str,
+        track_ids: &[String],
+    ) -> Result<(), StorageError> {
         if track_ids.is_empty() {
             return Ok(());
         }
@@ -507,7 +507,11 @@ impl VectorStorage for QdrantStorage {
         Ok(())
     }
 
-    async fn get(&self, collection: &str, track_id: &str) -> Result<Option<StoredEmbedding>, StorageError> {
+    async fn get(
+        &self,
+        collection: &str,
+        track_id: &str,
+    ) -> Result<Option<StoredEmbedding>, StorageError> {
         let full_name = self.collection_name(collection);
         let point_id = Self::track_id_to_point_id(track_id);
 
@@ -575,7 +579,10 @@ impl VectorStorage for QdrantStorage {
             .await
             .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
 
-        Ok(info.result.map(|r| r.points_count.unwrap_or(0)).unwrap_or(0))
+        Ok(info
+            .result
+            .map(|r| r.points_count.unwrap_or(0))
+            .unwrap_or(0))
     }
 }
 

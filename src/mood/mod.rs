@@ -6,9 +6,9 @@
 pub mod prompts;
 
 pub use prompts::{
-    get_all_moods, get_mood_by_id, get_moods_by_tier, MoodPrompt, MoodTier,
-    AROUSAL_HIGH_PROMPT, AROUSAL_LOW_PROMPT, CONTEXTUAL_MOODS, PRIMARY_MOODS,
-    REFINED_MOODS, VALENCE_NEGATIVE_PROMPT, VALENCE_POSITIVE_PROMPT,
+    get_all_moods, get_mood_by_id, get_moods_by_tier, MoodPrompt, MoodTier, AROUSAL_HIGH_PROMPT,
+    AROUSAL_LOW_PROMPT, CONTEXTUAL_MOODS, PRIMARY_MOODS, REFINED_MOODS, VALENCE_NEGATIVE_PROMPT,
+    VALENCE_POSITIVE_PROMPT,
 };
 
 use serde::{Deserialize, Serialize};
@@ -144,7 +144,11 @@ impl MoodClassifier {
         }
 
         // Sort all scores by confidence
-        scores.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        scores.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Compute valence and arousal if requested
         let (valence, arousal) = if include_va {

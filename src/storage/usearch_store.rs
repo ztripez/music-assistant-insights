@@ -81,9 +81,9 @@ impl UsearchStorage {
             dimensions: EMBEDDING_DIM,
             metric: MetricKind::Cos,
             quantization: ScalarKind::F32,
-            connectivity: 16,      // M parameter for HNSW
-            expansion_add: 128,    // ef_construction
-            expansion_search: 64,  // ef for search
+            connectivity: 16,     // M parameter for HNSW
+            expansion_add: 128,   // ef_construction
+            expansion_search: 64, // ef for search
             multi: false,
         };
 
@@ -128,7 +128,9 @@ impl UsearchStorage {
             let index = self.text_index.write_or_recover();
             index
                 .load(text_index_path.to_string_lossy().as_ref())
-                .map_err(|e| StorageError::OperationFailed(format!("Failed to load index: {}", e)))?;
+                .map_err(|e| {
+                    StorageError::OperationFailed(format!("Failed to load index: {}", e))
+                })?;
 
             if text_meta_path.exists() {
                 let data = fs::read(&text_meta_path).map_err(|e| {
@@ -143,21 +145,25 @@ impl UsearchStorage {
                 let data = fs::read(&text_idmap_path).map_err(|e| {
                     StorageError::OperationFailed(format!("Failed to read id map: {}", e))
                 })?;
-                let (id_map, next_key): (HashMap<String, u64>, u64) = bincode::deserialize(&data)
-                    .map_err(|e| StorageError::SerializationError(e.to_string()))?;
+                let (id_map, next_key): (HashMap<String, u64>, u64) =
+                    bincode::deserialize(&data)
+                        .map_err(|e| StorageError::SerializationError(e.to_string()))?;
                 *self.text_id_map.write_or_recover() = id_map;
                 *self.text_next_key.write_or_recover() = next_key;
             }
         }
 
         // Load audio collection
-        let (audio_index_path, audio_meta_path, audio_idmap_path) = self.get_paths(AUDIO_COLLECTION);
+        let (audio_index_path, audio_meta_path, audio_idmap_path) =
+            self.get_paths(AUDIO_COLLECTION);
         if audio_index_path.exists() {
             info!("Loading audio index from {:?}", audio_index_path);
             let index = self.audio_index.write_or_recover();
             index
                 .load(audio_index_path.to_string_lossy().as_ref())
-                .map_err(|e| StorageError::OperationFailed(format!("Failed to load index: {}", e)))?;
+                .map_err(|e| {
+                    StorageError::OperationFailed(format!("Failed to load index: {}", e))
+                })?;
 
             if audio_meta_path.exists() {
                 let data = fs::read(&audio_meta_path).map_err(|e| {
@@ -172,8 +178,9 @@ impl UsearchStorage {
                 let data = fs::read(&audio_idmap_path).map_err(|e| {
                     StorageError::OperationFailed(format!("Failed to read id map: {}", e))
                 })?;
-                let (id_map, next_key): (HashMap<String, u64>, u64) = bincode::deserialize(&data)
-                    .map_err(|e| StorageError::SerializationError(e.to_string()))?;
+                let (id_map, next_key): (HashMap<String, u64>, u64) =
+                    bincode::deserialize(&data)
+                        .map_err(|e| StorageError::SerializationError(e.to_string()))?;
                 *self.audio_id_map.write_or_recover() = id_map;
                 *self.audio_next_key.write_or_recover() = next_key;
             }
@@ -206,9 +213,9 @@ impl UsearchStorage {
 
             // Save index (blocking but usearch requires it)
             let index_path_str = index_path.to_string_lossy().into_owned();
-            index
-                .save(&index_path_str)
-                .map_err(|e| StorageError::OperationFailed(format!("Failed to save index: {}", e)))?;
+            index.save(&index_path_str).map_err(|e| {
+                StorageError::OperationFailed(format!("Failed to save index: {}", e))
+            })?;
 
             // Serialize metadata and id map
             let meta_data = bincode::serialize(&*metadata)
@@ -225,10 +232,12 @@ impl UsearchStorage {
         let idmap_path_clone = idmap_path.clone();
 
         spawn_blocking(move || {
-            fs::write(&meta_path_clone, meta_data)
-                .map_err(|e| StorageError::OperationFailed(format!("Failed to write metadata: {}", e)))?;
-            fs::write(&idmap_path_clone, idmap_data)
-                .map_err(|e| StorageError::OperationFailed(format!("Failed to write id map: {}", e)))?;
+            fs::write(&meta_path_clone, meta_data).map_err(|e| {
+                StorageError::OperationFailed(format!("Failed to write metadata: {}", e))
+            })?;
+            fs::write(&idmap_path_clone, idmap_data).map_err(|e| {
+                StorageError::OperationFailed(format!("Failed to write id map: {}", e))
+            })?;
             Ok::<(), StorageError>(())
         })
         .await
@@ -419,17 +428,9 @@ impl UsearchStorage {
     /// Internal delete without saving to disk (for batch operations)
     fn delete_one(&self, collection: &str, track_id: &str) -> Result<bool, StorageError> {
         let (index, metadata_map, id_map) = if collection == TEXT_COLLECTION {
-            (
-                &self.text_index,
-                &self.text_metadata,
-                &self.text_id_map,
-            )
+            (&self.text_index, &self.text_metadata, &self.text_id_map)
         } else {
-            (
-                &self.audio_index,
-                &self.audio_metadata,
-                &self.audio_id_map,
-            )
+            (&self.audio_index, &self.audio_metadata, &self.audio_id_map)
         };
 
         // Get key for track_id
@@ -566,7 +567,11 @@ impl VectorStorage for UsearchStorage {
         Ok(())
     }
 
-    async fn delete_batch(&self, collection: &str, track_ids: &[String]) -> Result<(), StorageError> {
+    async fn delete_batch(
+        &self,
+        collection: &str,
+        track_ids: &[String],
+    ) -> Result<(), StorageError> {
         if track_ids.is_empty() {
             return Ok(());
         }
@@ -585,7 +590,11 @@ impl VectorStorage for UsearchStorage {
             self.save_to_disk(collection).await?;
         }
 
-        debug!(collection, count = track_ids.len(), "Batch deleted embeddings");
+        debug!(
+            collection,
+            count = track_ids.len(),
+            "Batch deleted embeddings"
+        );
         Ok(())
     }
 

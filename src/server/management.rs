@@ -11,14 +11,14 @@ use axum::extract::{Path, State};
 use tracing::info;
 
 use crate::error::AppError;
+#[cfg(any(feature = "storage", feature = "storage-file"))]
+use crate::types::StorageStatsResponse;
 #[cfg(feature = "inference")]
 use crate::types::{
     DeleteModelResponse, DownloadModelRequest, DownloadModelResponse, ListDownloadsResponse,
     ListModelsResponse, LoadModelRequest, LoadModelResponse, ModelStatus,
 };
 use crate::types::{HealthStatus, ModelDetail, StorageStats, SystemStatus, SystemStatusResponse};
-#[cfg(any(feature = "storage", feature = "storage-file"))]
-use crate::types::StorageStatsResponse;
 
 #[cfg(feature = "inference")]
 use super::extractors::MsgPackExtractor;
@@ -477,5 +477,7 @@ pub async fn delete_model(
 
 #[cfg(not(any(feature = "storage", feature = "storage-file")))]
 pub async fn storage_stats(State(_state): State<AppState>) -> Result<(), AppError> {
-    Err(AppError::Internal("Storage feature not enabled".to_string()))
+    Err(AppError::Internal(
+        "Storage feature not enabled".to_string(),
+    ))
 }

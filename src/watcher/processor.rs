@@ -7,15 +7,17 @@ use rubato::{FftFixedIn, Resampler};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::inference::{format_track_metadata, AudioData, AudioFormat, ClapModel, Embedding, TextTrackMetadata};
-use crate::storage::{TrackMetadata, VectorStorage, TEXT_COLLECTION, AUDIO_COLLECTION};
+use crate::inference::{
+    format_track_metadata, AudioData, AudioFormat, ClapModel, Embedding, TextTrackMetadata,
+};
+use crate::storage::{TrackMetadata, VectorStorage, AUDIO_COLLECTION, TEXT_COLLECTION};
 
 use super::decoder::AudioDecoder;
 use super::metadata::ExtractedMetadata;
 use super::{generate_track_id, WatcherError};
 
 /// Target sample rate for CLAP model (48kHz)
-const TARGET_SAMPLE_RATE: u32 = 48000;
+const TARGET_SAMPLE_RATE: u32 = 48_000;
 
 /// Window size in samples at target sample rate (10 seconds)
 const WINDOW_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 10;
@@ -55,7 +57,11 @@ impl TrackProcessor {
     /// # Arguments
     /// * `path` - Absolute path to the audio file
     /// * `base_path` - Base directory path (track_id will be relative to this)
-    pub async fn process_file(&self, path: &Path, base_path: &Path) -> Result<ProcessedTrack, WatcherError> {
+    pub async fn process_file(
+        &self,
+        path: &Path,
+        base_path: &Path,
+    ) -> Result<ProcessedTrack, WatcherError> {
         let path_str = path.to_string_lossy().to_string();
         info!(path = %path_str, "Processing audio file");
 
@@ -151,13 +157,23 @@ impl TrackProcessor {
 
             // Store text embedding
             storage
-                .upsert(TEXT_COLLECTION, &track_id, text_embedding.data(), track_meta.clone())
+                .upsert(
+                    TEXT_COLLECTION,
+                    &track_id,
+                    text_embedding.data(),
+                    track_meta.clone(),
+                )
                 .await
                 .map_err(|e| WatcherError::StorageError(e.to_string()))?;
 
             // Store audio embedding
             storage
-                .upsert(AUDIO_COLLECTION, &track_id, audio_embedding.data(), track_meta)
+                .upsert(
+                    AUDIO_COLLECTION,
+                    &track_id,
+                    audio_embedding.data(),
+                    track_meta,
+                )
                 .await
                 .map_err(|e| WatcherError::StorageError(e.to_string()))?;
 
@@ -193,8 +209,9 @@ fn resample_audio(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f
     let chunk_size = 1024;
 
     // Create resampler
-    let mut resampler = FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, chunk_size, 2, 1)
-        .map_err(|e| WatcherError::ResamplingError(e.to_string()))?;
+    let mut resampler =
+        FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, chunk_size, 2, 1)
+            .map_err(|e| WatcherError::ResamplingError(e.to_string()))?;
 
     let mut output = Vec::new();
     let mut position = 0;

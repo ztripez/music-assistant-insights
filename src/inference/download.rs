@@ -179,7 +179,10 @@ impl DownloadManager {
         let mut downloads = self.downloads.write().await;
         downloads.retain(|_, d| {
             // Keep active downloads
-            if matches!(d.status, DownloadStatus::Pending | DownloadStatus::Downloading) {
+            if matches!(
+                d.status,
+                DownloadStatus::Pending | DownloadStatus::Downloading
+            ) {
                 return true;
             }
             // Keep recent finished downloads
@@ -240,7 +243,12 @@ impl DownloadManager {
             let path = model_cache.join(tokenizer_file);
             if !path.exists() {
                 if let Err(e) = self
-                    .download_file_with_progress(download_id, &config.model_id, tokenizer_file, &path)
+                    .download_file_with_progress(
+                        download_id,
+                        &config.model_id,
+                        tokenizer_file,
+                        &path,
+                    )
                     .await
                 {
                     warn!("Failed to download tokenizer (optional): {e}");
@@ -387,8 +395,8 @@ impl DownloadManager {
                 return Err(InferenceError::DownloadFailed("Cancelled".to_string()));
             }
 
-            let chunk =
-                chunk.map_err(|e| InferenceError::DownloadFailed(format!("Download failed: {e}")))?;
+            let chunk = chunk
+                .map_err(|e| InferenceError::DownloadFailed(format!("Download failed: {e}")))?;
 
             hasher.update(&chunk);
             file.write_all(&chunk).await?;
@@ -483,8 +491,8 @@ pub fn get_cache_dir() -> PathBuf {
 /// Returns a path under cache dir even for invalid IDs (they just won't match real models).
 pub fn get_model_dir(model_id: &str) -> PathBuf {
     // Use sanitized ID, or fallback to hash for invalid IDs
-    let safe_name = sanitize_model_id(model_id)
-        .unwrap_or_else(|_| format!("invalid_{:x}", md5_hash(model_id)));
+    let safe_name =
+        sanitize_model_id(model_id).unwrap_or_else(|_| format!("invalid_{:x}", md5_hash(model_id)));
     default_cache_dir().join(safe_name)
 }
 
@@ -528,7 +536,11 @@ pub fn get_model_size(model_id: &str) -> Option<u64> {
         }
     }
 
-    if total > 0 { Some(total) } else { None }
+    if total > 0 {
+        Some(total)
+    } else {
+        None
+    }
 }
 
 /// Download a model from Hugging Face Hub if not already cached
@@ -693,10 +705,6 @@ async fn download_response(response: reqwest::Response, dest: &Path) -> Result<(
 /// Convert bytes to hex string (simple implementation)
 mod hex {
     pub fn encode(bytes: impl AsRef<[u8]>) -> String {
-        bytes
-            .as_ref()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+        bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
     }
 }

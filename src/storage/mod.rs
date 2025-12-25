@@ -53,7 +53,7 @@ pub const AUDIO_COLLECTION: &str = "tracks_audio";
 /// Metadata stored with each embedding
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackMetadata {
-    /// Music Assistant item_id (relative path for local files)
+    /// Music Assistant `item_id` (relative path for local files)
     pub track_id: String,
     /// Track name
     pub name: String,
@@ -76,7 +76,7 @@ pub struct TrackMetadata {
     /// All detected moods
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moods: Option<Vec<String>>,
-    /// Mood confidence scores (mood_id -> confidence 0.0-1.0)
+    /// Mood confidence scores (`mood_id` -> confidence 0.0-1.0)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mood_scores: Option<std::collections::HashMap<String, f32>>,
     /// Valence (-1.0 negative to 1.0 positive)
@@ -298,10 +298,18 @@ pub trait VectorStorage: Send + Sync {
     async fn delete(&self, collection: &str, track_id: &str) -> Result<(), StorageError>;
 
     /// Delete multiple embeddings by track IDs
-    async fn delete_batch(&self, collection: &str, track_ids: &[String]) -> Result<(), StorageError>;
+    async fn delete_batch(
+        &self,
+        collection: &str,
+        track_ids: &[String],
+    ) -> Result<(), StorageError>;
 
     /// Get an embedding by track ID
-    async fn get(&self, collection: &str, track_id: &str) -> Result<Option<StoredEmbedding>, StorageError>;
+    async fn get(
+        &self,
+        collection: &str,
+        track_id: &str,
+    ) -> Result<Option<StoredEmbedding>, StorageError>;
 
     /// Check if a track exists in the collection
     async fn exists(&self, collection: &str, track_id: &str) -> Result<bool, StorageError>;

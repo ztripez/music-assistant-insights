@@ -135,9 +135,7 @@ impl AudioDecoder {
                             continue;
                         }
                         Err(e) => {
-                            return Err(WatcherError::DecodeError(format!(
-                                "Decode error: {e}"
-                            )));
+                            return Err(WatcherError::DecodeError(format!("Decode error: {e}")));
                         }
                     }
                 }

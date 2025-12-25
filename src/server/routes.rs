@@ -14,7 +14,7 @@ use super::AppState;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// MessagePack response wrapper
+/// `MessagePack` response wrapper
 pub struct MsgPack<T>(pub T);
 
 impl<T: serde::Serialize> IntoResponse for MsgPack<T> {

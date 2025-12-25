@@ -73,7 +73,10 @@ pub async fn text_embed(
         AppError::from(e)
     })?;
 
-    debug!(embedding_dim = embedding.data().len(), "Text embedding generated");
+    debug!(
+        embedding_dim = embedding.data().len(),
+        "Text embedding generated"
+    );
 
     Ok(MsgPack(TextEmbedResponse {
         embedding: embedding.into_data(),
@@ -131,20 +134,21 @@ pub async fn audio_embed(
     );
 
     // Generate embedding using the model
-    let embedding = tokio::task::spawn_blocking({
-        move || model.audio_embedding(&audio_data)
-    })
-    .await
-    .map_err(|e| {
-        error!(error = %e, "Audio embedding task panicked");
-        AppError::Internal(e.to_string())
-    })?
-    .map_err(|e| {
-        error!(error = %e, "Audio embedding failed");
-        AppError::from(e)
-    })?;
+    let embedding = tokio::task::spawn_blocking({ move || model.audio_embedding(&audio_data) })
+        .await
+        .map_err(|e| {
+            error!(error = %e, "Audio embedding task panicked");
+            AppError::Internal(e.to_string())
+        })?
+        .map_err(|e| {
+            error!(error = %e, "Audio embedding failed");
+            AppError::from(e)
+        })?;
 
-    debug!(embedding_dim = embedding.data().len(), "Audio embedding generated");
+    debug!(
+        embedding_dim = embedding.data().len(),
+        "Audio embedding generated"
+    );
 
     Ok(MsgPack(AudioEmbedResponse {
         embedding: embedding.into_data(),

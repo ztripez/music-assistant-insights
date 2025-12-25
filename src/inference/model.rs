@@ -108,7 +108,10 @@ impl ClapModel {
     }
 
     /// Load CLAP model with full device configuration
-    pub fn load_with_config(paths: &ModelPaths, device_config: DeviceConfig) -> Result<Self, InferenceError> {
+    pub fn load_with_config(
+        paths: &ModelPaths,
+        device_config: DeviceConfig,
+    ) -> Result<Self, InferenceError> {
         let device = device_config.selected_device();
 
         info!(?device, "Loading CLAP model");
@@ -145,7 +148,7 @@ impl ClapModel {
             None
         };
 
-        let audio_processor = AudioProcessor::new(48000, 10.0, 10.0);
+        let audio_processor = AudioProcessor::new(48_000, 10.0, 10.0);
 
         Ok(Self {
             text_session: Mutex::new(text_session),
@@ -156,13 +159,15 @@ impl ClapModel {
         })
     }
 
-    fn create_session(model_path: &Path, device_config: &DeviceConfig) -> Result<Session, InferenceError> {
+    fn create_session(
+        model_path: &Path,
+        device_config: &DeviceConfig,
+    ) -> Result<Session, InferenceError> {
         // Read model bytes from file
         let model_bytes = std::fs::read(model_path)
             .map_err(|e| InferenceError::Onnx(format!("Failed to read model file: {e}")))?;
 
-        let mut builder = Session::builder()
-            .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+        let mut builder = Session::builder().map_err(|e| InferenceError::Onnx(e.to_string()))?;
 
         builder = builder
             .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -325,9 +330,11 @@ impl ClapModel {
             Tensor::from_array(([1usize, MAX_SEQ_LENGTH], input_ids_data.into_boxed_slice()))
                 .map_err(|e| InferenceError::Onnx(e.to_string()))?;
 
-        let attention_mask =
-            Tensor::from_array(([1usize, MAX_SEQ_LENGTH], attention_mask_data.into_boxed_slice()))
-                .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+        let attention_mask = Tensor::from_array((
+            [1usize, MAX_SEQ_LENGTH],
+            attention_mask_data.into_boxed_slice(),
+        ))
+        .map_err(|e| InferenceError::Onnx(e.to_string()))?;
 
         // Lock session for inference
         let mut session = self

@@ -57,14 +57,19 @@ pub async fn status(State(state): State<AppState>) -> impl IntoResponse {
     match watcher_guard.as_ref() {
         Some(watcher) => {
             let watcher_state = watcher.state().await;
-            Json(WatcherStatusResponse { state: watcher_state }).into_response()
+            Json(WatcherStatusResponse {
+                state: watcher_state,
+            })
+            .into_response()
         }
-        None => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "error": "Watcher not initialized",
                 "status": "not_initialized"
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -73,22 +78,27 @@ pub async fn start(State(state): State<AppState>) -> impl IntoResponse {
     let mut watcher_guard = state.watcher.write().await;
 
     match watcher_guard.as_mut() {
-        Some(watcher) => {
-            match watcher.start().await {
-                Ok(()) => Json(SuccessResponse {
-                    success: true,
-                    message: "Watcher started".to_string(),
-                }).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+        Some(watcher) => match watcher.start().await {
+            Ok(()) => Json(SuccessResponse {
+                success: true,
+                message: "Watcher started".to_string(),
+            })
+            .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
                     "error": e.to_string()
-                }))).into_response(),
-            }
-        }
-        None => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+                })),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "error": "Watcher not initialized"
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -97,22 +107,27 @@ pub async fn stop(State(state): State<AppState>) -> impl IntoResponse {
     let mut watcher_guard = state.watcher.write().await;
 
     match watcher_guard.as_mut() {
-        Some(watcher) => {
-            match watcher.stop().await {
-                Ok(()) => Json(SuccessResponse {
-                    success: true,
-                    message: "Watcher stopped".to_string(),
-                }).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+        Some(watcher) => match watcher.stop().await {
+            Ok(()) => Json(SuccessResponse {
+                success: true,
+                message: "Watcher stopped".to_string(),
+            })
+            .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
                     "error": e.to_string()
-                }))).into_response(),
-            }
-        }
-        None => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+                })),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "error": "Watcher not initialized"
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -121,22 +136,27 @@ pub async fn pause(State(state): State<AppState>) -> impl IntoResponse {
     let watcher_guard = state.watcher.read().await;
 
     match watcher_guard.as_ref() {
-        Some(watcher) => {
-            match watcher.send_command(WatcherCommand::Pause).await {
-                Ok(()) => Json(SuccessResponse {
-                    success: true,
-                    message: "Watcher paused".to_string(),
-                }).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+        Some(watcher) => match watcher.send_command(WatcherCommand::Pause).await {
+            Ok(()) => Json(SuccessResponse {
+                success: true,
+                message: "Watcher paused".to_string(),
+            })
+            .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
                     "error": e.to_string()
-                }))).into_response(),
-            }
-        }
-        None => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+                })),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "error": "Watcher not initialized"
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -145,22 +165,27 @@ pub async fn resume(State(state): State<AppState>) -> impl IntoResponse {
     let watcher_guard = state.watcher.read().await;
 
     match watcher_guard.as_ref() {
-        Some(watcher) => {
-            match watcher.send_command(WatcherCommand::Resume).await {
-                Ok(()) => Json(SuccessResponse {
-                    success: true,
-                    message: "Watcher resumed".to_string(),
-                }).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+        Some(watcher) => match watcher.send_command(WatcherCommand::Resume).await {
+            Ok(()) => Json(SuccessResponse {
+                success: true,
+                message: "Watcher resumed".to_string(),
+            })
+            .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
                     "error": e.to_string()
-                }))).into_response(),
-            }
-        }
-        None => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+                })),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "error": "Watcher not initialized"
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -173,21 +198,33 @@ pub async fn trigger_scan(
 
     match watcher_guard.as_ref() {
         Some(watcher) => {
-            match watcher.send_command(WatcherCommand::TriggerScan { force: request.force }).await {
+            match watcher
+                .send_command(WatcherCommand::TriggerScan {
+                    force: request.force,
+                })
+                .await
+            {
                 Ok(()) => Json(SuccessResponse {
                     success: true,
                     message: format!("Scan triggered (force={})", request.force),
-                }).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                    "error": e.to_string()
-                }))).into_response(),
+                })
+                .into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                )
+                    .into_response(),
             }
         }
-        None => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "error": "Watcher not initialized"
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -231,21 +268,34 @@ pub async fn add_folder(
 
     match watcher_guard.as_ref() {
         Some(watcher) => {
-            match watcher.send_command(WatcherCommand::AddFolder(folder)).await {
-                Ok(()) => (StatusCode::CREATED, Json(SuccessResponse {
-                    success: true,
-                    message: format!("Folder added: {}", request.path),
-                })).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                    "error": e.to_string()
-                }))).into_response(),
+            match watcher
+                .send_command(WatcherCommand::AddFolder(folder))
+                .await
+            {
+                Ok(()) => (
+                    StatusCode::CREATED,
+                    Json(SuccessResponse {
+                        success: true,
+                        message: format!("Folder added: {}", request.path),
+                    }),
+                )
+                    .into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                )
+                    .into_response(),
             }
         }
-        None => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "error": "Watcher not started. Start the watcher first."
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -263,20 +313,30 @@ pub async fn remove_folder(
 
     match watcher_guard.as_ref() {
         Some(watcher) => {
-            match watcher.send_command(WatcherCommand::RemoveFolder(decoded_path.clone())).await {
+            match watcher
+                .send_command(WatcherCommand::RemoveFolder(decoded_path.clone()))
+                .await
+            {
                 Ok(()) => Json(SuccessResponse {
                     success: true,
                     message: format!("Folder removed: {}", decoded_path),
-                }).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                    "error": e.to_string()
-                }))).into_response(),
+                })
+                .into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                )
+                    .into_response(),
             }
         }
-        None => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "error": "Watcher not started"
-            }))).into_response()
-        }
+            })),
+        )
+            .into_response(),
     }
 }

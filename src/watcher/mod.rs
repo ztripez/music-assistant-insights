@@ -19,7 +19,9 @@ pub use metadata::ExtractedMetadata;
 pub use processor::TrackProcessor;
 pub use scanner::FolderScanner;
 pub use service::{WatcherCommand, WatcherEvent, WatcherService};
-pub use state::{FileRegistry, FolderState, ScanProgress, WatcherState, WatcherStats, WatcherStatus};
+pub use state::{
+    FileRegistry, FolderState, ScanProgress, WatcherState, WatcherStats, WatcherStatus,
+};
 pub use watcher::{FileEvent, FolderWatcher};
 
 use std::path::Path;
@@ -38,9 +40,7 @@ use std::path::Path;
 /// ```
 pub fn generate_track_id(file_path: &Path, base_path: &Path) -> String {
     // Get relative path from base
-    let relative = file_path
-        .strip_prefix(base_path)
-        .unwrap_or(file_path);
+    let relative = file_path.strip_prefix(base_path).unwrap_or(file_path);
 
     // Convert to string with forward slashes for cross-platform consistency
     let path_str = relative.to_string_lossy();
