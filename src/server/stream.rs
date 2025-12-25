@@ -24,11 +24,10 @@ use super::extractors::MsgPackExtractor;
 use super::routes::MsgPack;
 use super::AppState;
 use crate::inference::{
-    AudioFormat, ClapModel, MelFeatures, EMBEDDING_DIM,
-    audio::{CLAP_N_FFT, CLAP_HOP_LENGTH, CLAP_N_MELS, CLAP_F_MIN, CLAP_F_MAX, CLAP_SPEC_SIZE, resize_mel_spectrogram},
+    compute_mel_spectrogram, pcm_to_f32, AudioFormat, ClapModel, MelFeatures, EMBEDDING_DIM,
+    audio::{CLAP_N_FFT, CLAP_N_MELS, CLAP_F_MIN, CLAP_F_MAX, TARGET_SAMPLE_RATE},
 };
 use mel_spec::mel::mel;
-use mel_spec::stft::Spectrogram;
 use crate::types::api::{
     EndStreamRequest, EndStreamResponse, FramesResponse, IngestMetadata, StartStreamRequest,
     StartStreamResponse, StreamSessionStatus, StreamStatusResponse,
@@ -41,8 +40,6 @@ struct StreamErrorResponse {
     error: String,
 }
 
-/// Target sample rate for CLAP models
-const TARGET_SAMPLE_RATE: u32 = 48_000;
 
 /// Window size in samples (10 seconds at 48kHz)
 const WINDOW_SAMPLES: usize = 480_000;
@@ -219,51 +216,7 @@ impl StreamSession {
 
     /// Convert raw bytes to f32 samples based on format
     fn bytes_to_f32(&self, data: &[u8]) -> Result<Vec<f32>, StreamError> {
-        match self.format {
-            AudioFormat::PcmF32Le => {
-                if data.len() % 4 != 0 {
-                    return Err(StreamError::InvalidAudioFormat(
-                        "F32 data length not multiple of 4".into(),
-                    ));
-                }
-                Ok(data
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect())
-            }
-            AudioFormat::PcmS16Le => {
-                if data.len() % 2 != 0 {
-                    return Err(StreamError::InvalidAudioFormat(
-                        "S16 data length not multiple of 2".into(),
-                    ));
-                }
-                Ok(data
-                    .chunks_exact(2)
-                    .map(|chunk| {
-                        let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-                        sample as f32 / 32768.0
-                    })
-                    .collect())
-            }
-            AudioFormat::PcmS24Le => {
-                if data.len() % 3 != 0 {
-                    return Err(StreamError::InvalidAudioFormat(
-                        "S24 data length not multiple of 3".into(),
-                    ));
-                }
-                Ok(data
-                    .chunks_exact(3)
-                    .map(|chunk| {
-                        let sample = if chunk[2] & 0x80 != 0 {
-                            i32::from_le_bytes([chunk[0], chunk[1], chunk[2], 0xFF])
-                        } else {
-                            i32::from_le_bytes([chunk[0], chunk[1], chunk[2], 0x00])
-                        };
-                        sample as f32 / 8_388_608.0
-                    })
-                    .collect())
-            }
-        }
+        pcm_to_f32(data, self.format).map_err(|e| StreamError::InvalidAudioFormat(e.to_string()))
     }
 
     /// Process resampling and extract mel spectrograms for complete windows
@@ -313,7 +266,7 @@ impl StreamSession {
             let window: Vec<f32> = self.resampled_buffer[..WINDOW_SAMPLES].to_vec();
 
             // Compute mel spectrogram for this window (cheap operation)
-            let mel = self.compute_mel_spectrogram(&window)?;
+            let mel = self.compute_mel(&window)?;
             self.window_mels.push(mel);
 
             // Only remove hop samples (keep overlap for next window)
@@ -332,58 +285,9 @@ impl StreamSession {
     }
 
     /// Compute mel spectrogram for a single audio window (cheap operation)
-    fn compute_mel_spectrogram(&self, samples: &[f32]) -> Result<MelFeatures, StreamError> {
-        // Create STFT processor
-        let mut stft = Spectrogram::new(CLAP_N_FFT, CLAP_HOP_LENGTH);
-
-        // Collect all STFT frames as power spectra
-        let mut power_frames: Vec<Vec<f32>> = Vec::new();
-
-        for chunk in samples.chunks(CLAP_HOP_LENGTH) {
-            if let Some(fft_result) = stft.add(chunk) {
-                // Compute power spectrum (magnitude squared)
-                let power: Vec<f32> = fft_result
-                    .iter()
-                    .map(|c| (c.re * c.re + c.im * c.im) as f32)
-                    .collect();
-                power_frames.push(power);
-            }
-        }
-
-        if power_frames.is_empty() {
-            return Err(StreamError::InvalidAudioFormat(
-                "No STFT frames produced".to_string(),
-            ));
-        }
-
-        // Apply mel filterbank to each power spectrum frame
-        let n_freqs = CLAP_N_FFT / 2 + 1;
-        let time_frames = power_frames.len();
-
-        // Build mel spectrogram: [n_mels, time_frames]
-        let mut mel_spec_raw = vec![0.0f32; CLAP_N_MELS * time_frames];
-
-        for (t, power_frame) in power_frames.iter().enumerate() {
-            let frame_len = power_frame.len().min(n_freqs);
-
-            for m in 0..CLAP_N_MELS {
-                let mut sum = 0.0f32;
-                for f in 0..frame_len {
-                    sum += self.mel_filterbank[[m, f]] * power_frame[f];
-                }
-                // Apply log scaling
-                mel_spec_raw[m * time_frames + t] = (sum + 1e-10).ln();
-            }
-        }
-
-        // Resize to [CLAP_SPEC_SIZE, CLAP_N_MELS] for CLAP model
-        let resized = resize_mel_spectrogram(&mel_spec_raw, CLAP_N_MELS, time_frames, CLAP_SPEC_SIZE);
-
-        Ok(MelFeatures {
-            data: resized,
-            height: CLAP_SPEC_SIZE,
-            width: CLAP_N_MELS,
-        })
+    fn compute_mel(&self, samples: &[f32]) -> Result<MelFeatures, StreamError> {
+        compute_mel_spectrogram(samples, &self.mel_filterbank)
+            .map_err(|e| StreamError::InvalidAudioFormat(e.to_string()))
     }
 
     /// Finalize session: run inference on all buffered mel spectrograms and average
@@ -415,7 +319,7 @@ impl StreamSession {
             }
 
             // Compute mel spectrogram for the final window
-            let mel = self.compute_mel_spectrogram(&final_window)?;
+            let mel = self.compute_mel(&final_window)?;
             self.window_mels.push(mel);
         }
 
@@ -1083,23 +987,19 @@ pub async fn stream_status(
 }
 
 
-/// Format metadata into text for embedding
+/// Format metadata into text for embedding using shared format
 fn format_metadata_text(metadata: &IngestMetadata) -> String {
-    let mut parts = vec![metadata.name.clone()];
+    use crate::inference::{format_track_metadata, TextTrackMetadata};
 
-    if !metadata.artists.is_empty() {
-        parts.push(format!("by {}", metadata.artists.join(", ")));
-    }
-
-    if let Some(ref album) = metadata.album {
-        parts.push(format!("from {}", album));
-    }
-
-    if !metadata.genres.is_empty() {
-        parts.push(format!("({})", metadata.genres.join(", ")));
-    }
-
-    parts.join(" ")
+    // Convert IngestMetadata to TextTrackMetadata for consistent formatting
+    let text_meta = TextTrackMetadata {
+        name: metadata.name.clone(),
+        artists: metadata.artists.clone(),
+        album: metadata.album.clone(),
+        genres: metadata.genres.clone(),
+        mood: None,
+    };
+    format_track_metadata(&text_meta)
 }
 
 #[cfg(test)]
@@ -1116,9 +1016,10 @@ mod tests {
         };
 
         let text = format_metadata_text(&metadata);
+        // Uses format from inference::text - "Artist - Track. Album: X. Genres: Y"
         assert!(text.contains("Bohemian Rhapsody"));
-        assert!(text.contains("by Queen"));
-        assert!(text.contains("from A Night at the Opera"));
+        assert!(text.contains("Queen"));
+        assert!(text.contains("A Night at the Opera"));
         assert!(text.contains("Rock"));
     }
 

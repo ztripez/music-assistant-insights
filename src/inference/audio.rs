@@ -27,6 +27,9 @@ pub const CLAP_F_MAX: f32 = 14_000.0;
 /// CLAP spectrogram size (time dimension) that the HTSAT model expects
 pub const CLAP_SPEC_SIZE: usize = 256;
 
+/// Embedding dimension for CLAP models (512-d vectors)
+pub const EMBEDDING_DIM: usize = 512;
+
 /// Audio format enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +40,59 @@ pub enum AudioFormat {
     PcmS16Le,
     /// 24-bit signed integer little-endian (packed)
     PcmS24Le,
+}
+
+/// Convert raw PCM bytes to f32 samples based on format.
+///
+/// This is the shared implementation used by both `AudioData::to_f32_samples`
+/// and streaming audio processing.
+pub fn pcm_to_f32(data: &[u8], format: AudioFormat) -> Result<Vec<f32>, InferenceError> {
+    match format {
+        AudioFormat::PcmF32Le => {
+            if data.len() % 4 != 0 {
+                return Err(InferenceError::InvalidAudioFormat(
+                    "F32 data length not multiple of 4".to_string(),
+                ));
+            }
+            Ok(data
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect())
+        }
+        AudioFormat::PcmS16Le => {
+            if data.len() % 2 != 0 {
+                return Err(InferenceError::InvalidAudioFormat(
+                    "S16 data length not multiple of 2".to_string(),
+                ));
+            }
+            Ok(data
+                .chunks_exact(2)
+                .map(|chunk| {
+                    let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                    sample as f32 / 32768.0
+                })
+                .collect())
+        }
+        AudioFormat::PcmS24Le => {
+            if data.len() % 3 != 0 {
+                return Err(InferenceError::InvalidAudioFormat(
+                    "S24 data length not multiple of 3".to_string(),
+                ));
+            }
+            Ok(data
+                .chunks_exact(3)
+                .map(|chunk| {
+                    // Sign-extend 24-bit to 32-bit
+                    let sample = if chunk[2] & 0x80 != 0 {
+                        i32::from_le_bytes([chunk[0], chunk[1], chunk[2], 0xFF])
+                    } else {
+                        i32::from_le_bytes([chunk[0], chunk[1], chunk[2], 0x00])
+                    };
+                    sample as f32 / 8_388_608.0 // 2^23
+                })
+                .collect())
+        }
+    }
 }
 
 /// Raw audio data with format information
@@ -56,55 +112,7 @@ pub struct AudioData {
 impl AudioData {
     /// Convert raw bytes to f32 samples based on format
     pub fn to_f32_samples(&self) -> Result<Vec<f32>, InferenceError> {
-        match self.format {
-            AudioFormat::PcmF32Le => {
-                if self.data.len() % 4 != 0 {
-                    return Err(InferenceError::InvalidAudioFormat(
-                        "F32 data length not multiple of 4".to_string(),
-                    ));
-                }
-                Ok(self
-                    .data
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect())
-            }
-            AudioFormat::PcmS16Le => {
-                if self.data.len() % 2 != 0 {
-                    return Err(InferenceError::InvalidAudioFormat(
-                        "S16 data length not multiple of 2".to_string(),
-                    ));
-                }
-                Ok(self
-                    .data
-                    .chunks_exact(2)
-                    .map(|chunk| {
-                        let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-                        sample as f32 / 32768.0
-                    })
-                    .collect())
-            }
-            AudioFormat::PcmS24Le => {
-                if self.data.len() % 3 != 0 {
-                    return Err(InferenceError::InvalidAudioFormat(
-                        "S24 data length not multiple of 3".to_string(),
-                    ));
-                }
-                Ok(self
-                    .data
-                    .chunks_exact(3)
-                    .map(|chunk| {
-                        // Sign-extend 24-bit to 32-bit
-                        let sample = if chunk[2] & 0x80 != 0 {
-                            i32::from_le_bytes([chunk[0], chunk[1], chunk[2], 0xFF])
-                        } else {
-                            i32::from_le_bytes([chunk[0], chunk[1], chunk[2], 0x00])
-                        };
-                        sample as f32 / 8_388_608.0 // 2^23
-                    })
-                    .collect())
-            }
-        }
+        pcm_to_f32(&self.data, self.format)
     }
 }
 
@@ -210,7 +218,7 @@ impl AudioProcessor {
         // Convert each window to mel spectrogram
         let mut mel_features = Vec::with_capacity(windows.len());
         for window in windows {
-            let mel = self.compute_mel_spectrogram(&window)?;
+            let mel = self.compute_mel(&window)?;
             mel_features.push(mel);
         }
 
@@ -218,75 +226,76 @@ impl AudioProcessor {
     }
 
     /// Compute mel spectrogram for a single audio window
-    fn compute_mel_spectrogram(&self, samples: &[f32]) -> Result<MelFeatures, InferenceError> {
-        // Create STFT processor using mel_spec crate
-        let mut stft = Spectrogram::new(CLAP_N_FFT, CLAP_HOP_LENGTH);
-
-        // Collect all STFT frames as power spectra
-        // mel_spec's Spectrogram::add returns Option<Array1<Complex<f64>>>
-        let mut power_frames: Vec<Vec<f32>> = Vec::new();
-
-        // Process samples through STFT
-        for chunk in samples.chunks(CLAP_HOP_LENGTH) {
-            if let Some(fft_result) = stft.add(chunk) {
-                // fft_result is Array1<Complex<f64>>, compute power spectrum (magnitude squared)
-                let power: Vec<f32> = fft_result
-                    .iter()
-                    .map(|c| (c.re * c.re + c.im * c.im) as f32)
-                    .collect();
-                power_frames.push(power);
-            }
-        }
-
-        if power_frames.is_empty() {
-            return Err(InferenceError::AudioProcessing(
-                "No STFT frames produced".to_string(),
-            ));
-        }
-
-        // Apply mel filterbank to each power spectrum frame
-        // filterbank shape: [n_mels, n_fft/2 + 1]
-        // power frame shape: [n_fft/2 + 1] or [n_fft] depending on mel_spec output
-        let n_freqs = CLAP_N_FFT / 2 + 1;
-        let time_frames = power_frames.len();
-
-        // Build mel spectrogram: [n_mels, time_frames] (intermediate format)
-        let mut mel_spec_raw = vec![0.0f32; CLAP_N_MELS * time_frames];
-
-        for (t, power_frame) in power_frames.iter().enumerate() {
-            // Use only the first n_freqs bins (positive frequencies)
-            let frame_len = power_frame.len().min(n_freqs);
-
-            // Apply mel filterbank: mel_spec[m, t] = filterbank[m, :] @ power
-            for m in 0..CLAP_N_MELS {
-                let mut sum = 0.0f32;
-                for f in 0..frame_len {
-                    sum += self.mel_filterbank[[m, f]] * power_frame[f];
-                }
-                // Apply log scaling (add small epsilon to avoid log(0))
-                mel_spec_raw[m * time_frames + t] = (sum + 1e-10).ln();
-            }
-        }
-
-        debug!(
-            n_mels = CLAP_N_MELS,
-            time_frames = time_frames,
-            target_spec_size = CLAP_SPEC_SIZE,
-            "Mel spectrogram computed, resizing..."
-        );
-
-        // Resize to [CLAP_SPEC_SIZE, CLAP_N_MELS] for CLAP model
-        // CLAP expects shape [batch, 1, height=spec_size, width=n_mels]
-        // So we need to transpose [n_mels, time_frames] -> [time_frames, n_mels]
-        // and then resize time_frames to CLAP_SPEC_SIZE using linear interpolation
-        let resized = resize_mel_spectrogram(&mel_spec_raw, CLAP_N_MELS, time_frames, CLAP_SPEC_SIZE);
-
-        Ok(MelFeatures {
-            data: resized,
-            height: CLAP_SPEC_SIZE,
-            width: CLAP_N_MELS,
-        })
+    fn compute_mel(&self, samples: &[f32]) -> Result<MelFeatures, InferenceError> {
+        compute_mel_spectrogram(samples, &self.mel_filterbank)
     }
+}
+
+/// Compute mel spectrogram for a single audio window.
+///
+/// This is the shared implementation used by both `AudioProcessor` and streaming.
+///
+/// # Arguments
+/// * `samples` - Audio samples at 48kHz
+/// * `mel_filterbank` - Pre-computed mel filterbank of shape [n_mels, n_fft/2+1]
+///
+/// # Returns
+/// `MelFeatures` with shape [CLAP_SPEC_SIZE, CLAP_N_MELS] ready for CLAP inference
+pub fn compute_mel_spectrogram(
+    samples: &[f32],
+    mel_filterbank: &ndarray::Array2<f32>,
+) -> Result<MelFeatures, InferenceError> {
+    // Create STFT processor
+    let mut stft = Spectrogram::new(CLAP_N_FFT, CLAP_HOP_LENGTH);
+
+    // Collect all STFT frames as power spectra
+    let mut power_frames: Vec<Vec<f32>> = Vec::new();
+
+    for chunk in samples.chunks(CLAP_HOP_LENGTH) {
+        if let Some(fft_result) = stft.add(chunk) {
+            // Compute power spectrum (magnitude squared)
+            let power: Vec<f32> = fft_result
+                .iter()
+                .map(|c| (c.re * c.re + c.im * c.im) as f32)
+                .collect();
+            power_frames.push(power);
+        }
+    }
+
+    if power_frames.is_empty() {
+        return Err(InferenceError::AudioProcessing(
+            "No STFT frames produced".to_string(),
+        ));
+    }
+
+    // Apply mel filterbank to each power spectrum frame
+    let n_freqs = CLAP_N_FFT / 2 + 1;
+    let time_frames = power_frames.len();
+
+    // Build mel spectrogram: [n_mels, time_frames]
+    let mut mel_spec_raw = vec![0.0f32; CLAP_N_MELS * time_frames];
+
+    for (t, power_frame) in power_frames.iter().enumerate() {
+        let frame_len = power_frame.len().min(n_freqs);
+
+        for m in 0..CLAP_N_MELS {
+            let mut sum = 0.0f32;
+            for f in 0..frame_len {
+                sum += mel_filterbank[[m, f]] * power_frame[f];
+            }
+            // Apply log scaling
+            mel_spec_raw[m * time_frames + t] = (sum + 1e-10).ln();
+        }
+    }
+
+    // Resize to [CLAP_SPEC_SIZE, CLAP_N_MELS] for CLAP model
+    let resized = resize_mel_spectrogram(&mel_spec_raw, CLAP_N_MELS, time_frames, CLAP_SPEC_SIZE);
+
+    Ok(MelFeatures {
+        data: resized,
+        height: CLAP_SPEC_SIZE,
+        width: CLAP_N_MELS,
+    })
 }
 
 /// Resize mel spectrogram from [n_mels, src_time] to [dst_time, n_mels]

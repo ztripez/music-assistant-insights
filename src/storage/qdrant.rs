@@ -585,7 +585,3 @@ impl VectorStorage for QdrantStorage {
             .unwrap_or(0))
     }
 }
-
-/// Thread-safe wrapper for QdrantStorage
-#[allow(dead_code)]
-pub type SharedQdrantStorage = Arc<QdrantStorage>;

@@ -47,17 +47,6 @@ pub fn format_track_metadata(metadata: &TrackMetadata) -> String {
     parts.join(". ")
 }
 
-/// Clean and normalize text for embedding
-#[allow(dead_code)]
-pub fn normalize_text(text: &str) -> String {
-    text.trim()
-        .to_lowercase()
-        // Remove excessive whitespace
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,11 +94,5 @@ mod tests {
 
         let formatted = format_track_metadata(&metadata);
         assert!(formatted.contains("Queen, David Bowie - Under Pressure"));
-    }
-
-    #[test]
-    fn test_normalize_text() {
-        let text = "  Hello   World  ";
-        assert_eq!(normalize_text(text), "hello world");
     }
 }

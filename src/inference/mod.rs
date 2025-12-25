@@ -9,7 +9,10 @@ mod model;
 pub mod registry;
 mod text;
 
-pub use audio::{AudioData, AudioFormat, AudioProcessor, MelFeatures, resize_mel_spectrogram};
+pub use audio::{
+    compute_mel_spectrogram, pcm_to_f32, AudioData, AudioFormat, AudioProcessor,
+    MelFeatures, resize_mel_spectrogram, EMBEDDING_DIM,
+};
 pub use download::{
     download_model, get_cache_dir, get_model_dir, get_model_size, is_model_downloaded,
     DownloadManager, ModelPaths,
@@ -19,9 +22,6 @@ pub use registry::{KnownModel, KNOWN_MODELS};
 pub use text::{format_track_metadata, TrackMetadata as TextTrackMetadata};
 
 use crate::error::AppError;
-
-/// 512-dimensional embedding vector (CLAP output dimension)
-pub const EMBEDDING_DIM: usize = 512;
 
 /// Embedding vector type
 #[derive(Debug, Clone)]
