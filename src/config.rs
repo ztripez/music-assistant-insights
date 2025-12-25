@@ -184,6 +184,17 @@ impl Default for ServerConfig {
     }
 }
 
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            model: ModelConfig::default(),
+            audio: AudioConfig::default(),
+            storage: StorageConfig::default(),
+            server: ServerConfig::default(),
+        }
+    }
+}
+
 fn default_host() -> String {
     "0.0.0.0".to_string()
 }

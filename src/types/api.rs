@@ -901,3 +901,277 @@ pub struct BatchIngestResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mood: Option<MoodClassification>,
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod ingest_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+    fn test_ingest_request_minimal() {
+        let req = IngestRequest {
+            track_id: "track_123".to_string(),
+            metadata: IngestMetadata {
+                name: "Test Song".to_string(),
+                artists: vec![],
+                album: None,
+                genres: vec![],
+            },
+            audio: None,
+            classify_mood: true,
+            mood_tiers: vec![MoodTier::Primary],
+            mood_top_k: 3,
+            include_va: true,
+            skip_storage: false,
+        };
+
+        // Test JSON serialization
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("track_123"));
+        assert!(json.contains("Test Song"));
+
+        let decoded: IngestRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.track_id, "track_123");
+        assert!(decoded.classify_mood);
+    }
+
+    #[test]
+    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+    fn test_ingest_request_full() {
+        let req = IngestRequest {
+            track_id: "track_456".to_string(),
+            metadata: IngestMetadata {
+                name: "Full Song".to_string(),
+                artists: vec!["Artist 1".to_string(), "Artist 2".to_string()],
+                album: Some("Album Name".to_string()),
+                genres: vec!["rock".to_string(), "indie".to_string()],
+            },
+            audio: None, // Audio requires bytes, skip for JSON test
+            classify_mood: false,
+            mood_tiers: vec![MoodTier::Primary, MoodTier::Refined],
+            mood_top_k: 5,
+            include_va: false,
+            skip_storage: true,
+        };
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("Artist 1"));
+        assert!(json.contains("Album Name"));
+        assert!(json.contains("rock"));
+
+        let decoded: IngestRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.metadata.artists.len(), 2);
+        assert!(!decoded.classify_mood);
+        assert!(decoded.skip_storage);
+    }
+
+    #[test]
+    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+    fn test_ingest_response_serialization() {
+        let resp = IngestResponse {
+            track_id: "track_123".to_string(),
+            text_embedding: vec![0.1, 0.2, 0.3],
+            audio_embedding: Some(vec![0.4, 0.5, 0.6]),
+            formatted_text: "Test Song by Artist".to_string(),
+            audio_duration_s: Some(180.5),
+            text_stored: true,
+            audio_stored: true,
+            mood: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("track_123"));
+        assert!(json.contains("180.5"));
+
+        let decoded: IngestResponse = serde_json::from_str(&json).unwrap();
+        assert!(decoded.text_stored);
+        assert!(decoded.audio_stored);
+        assert_eq!(decoded.audio_duration_s, Some(180.5));
+    }
+
+    #[test]
+    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+    fn test_ingest_response_optional_fields() {
+        let resp = IngestResponse {
+            track_id: "track_123".to_string(),
+            text_embedding: vec![0.1],
+            audio_embedding: None,
+            formatted_text: "Test".to_string(),
+            audio_duration_s: None,
+            text_stored: true,
+            audio_stored: false,
+            mood: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        // Optional None fields should be skipped
+        assert!(!json.contains("audio_embedding"));
+        assert!(!json.contains("audio_duration_s"));
+        assert!(!json.contains("mood"));
+    }
+
+    #[test]
+    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+    fn test_batch_ingest_request() {
+        let req = BatchIngestRequest {
+            tracks: vec![
+                IngestTrack {
+                    track_id: "track_1".to_string(),
+                    metadata: IngestMetadata {
+                        name: "Song 1".to_string(),
+                        artists: vec!["Artist".to_string()],
+                        album: None,
+                        genres: vec![],
+                    },
+                    audio: None,
+                    classify_mood: Some(true),
+                },
+                IngestTrack {
+                    track_id: "track_2".to_string(),
+                    metadata: IngestMetadata {
+                        name: "Song 2".to_string(),
+                        artists: vec![],
+                        album: Some("Album".to_string()),
+                        genres: vec!["pop".to_string()],
+                    },
+                    audio: None,
+                    classify_mood: None,
+                },
+            ],
+            classify_mood: true,
+            mood_tiers: vec![MoodTier::Primary],
+            mood_top_k: 3,
+            include_va: true,
+            skip_storage: false,
+        };
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("track_1"));
+        assert!(json.contains("track_2"));
+        assert!(json.contains("Song 1"));
+
+        let decoded: BatchIngestRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.tracks.len(), 2);
+    }
+
+    #[test]
+    #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
+    fn test_batch_ingest_response() {
+        let resp = BatchIngestResponse {
+            results: vec![
+                BatchIngestResult {
+                    track_id: "track_1".to_string(),
+                    success: true,
+                    error: None,
+                    text_embedding: Some(vec![0.1, 0.2]),
+                    audio_embedding: None,
+                    text_stored: true,
+                    audio_stored: false,
+                    mood: None,
+                },
+                BatchIngestResult {
+                    track_id: "track_2".to_string(),
+                    success: false,
+                    error: Some("Failed to process".to_string()),
+                    text_embedding: None,
+                    audio_embedding: None,
+                    text_stored: false,
+                    audio_stored: false,
+                    mood: None,
+                },
+            ],
+            total: 2,
+            succeeded: 1,
+            failed: 1,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("track_1"));
+        assert!(json.contains("Failed to process"));
+
+        let decoded: BatchIngestResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.total, 2);
+        assert_eq!(decoded.succeeded, 1);
+        assert_eq!(decoded.failed, 1);
+    }
+}
+
+#[cfg(test)]
+mod mood_api_tests {
+    use super::*;
+
+    #[test]
+    fn test_mood_classify_request_defaults() {
+        // Test that defaults work correctly
+        let json = r#"{"embedding": [0.1, 0.2, 0.3]}"#;
+        let req: MoodClassifyRequest = serde_json::from_str(json).unwrap();
+
+        assert!(req.embedding.is_some());
+        assert!(req.track_id.is_none());
+        // Check defaults
+        assert_eq!(req.tiers.len(), 2); // primary + refined
+        assert_eq!(req.top_k, 3);
+        assert!(req.include_va);
+    }
+
+    #[test]
+    fn test_mood_classify_request_with_track_id() {
+        let json = r#"{"track_id": "track_123", "tiers": ["primary"], "top_k": 5}"#;
+        let req: MoodClassifyRequest = serde_json::from_str(json).unwrap();
+
+        assert!(req.embedding.is_none());
+        assert_eq!(req.track_id, Some("track_123".to_string()));
+        assert_eq!(req.tiers.len(), 1);
+        assert_eq!(req.top_k, 5);
+    }
+
+    #[test]
+    fn test_mood_info_serialization() {
+        let info = MoodInfo {
+            id: "happy".to_string(),
+            name: "Happy".to_string(),
+            tier: MoodTier::Refined,
+            valence_hint: 0.8,
+            arousal_hint: 0.6,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("happy"));
+        assert!(json.contains("refined"));
+        assert!(json.contains("0.8"));
+
+        let decoded: MoodInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.id, "happy");
+        assert_eq!(decoded.tier, MoodTier::Refined);
+    }
+
+    #[test]
+    fn test_list_moods_response() {
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("primary".to_string(), 4);
+        counts.insert("refined".to_string(), 14);
+
+        let resp = ListMoodsResponse {
+            moods: vec![MoodInfo {
+                id: "energetic".to_string(),
+                name: "Energetic".to_string(),
+                tier: MoodTier::Primary,
+                valence_hint: 0.5,
+                arousal_hint: 0.9,
+            }],
+            counts,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("energetic"));
+        assert!(json.contains("primary"));
+
+        let decoded: ListMoodsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.moods.len(), 1);
+        assert_eq!(decoded.counts.get("primary"), Some(&4));
+    }
+}

@@ -264,9 +264,88 @@ mod tests {
     }
 
     #[test]
+    fn test_cosine_similarity_empty() {
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_zero_vector() {
+        let a = vec![0.0, 0.0, 0.0];
+        let b = vec![1.0, 0.0, 0.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_different_lengths() {
+        let a = vec![1.0, 0.0];
+        let b = vec![1.0, 0.0, 0.0];
+        // Different lengths should return 0
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
     fn test_mood_tier_display() {
         assert_eq!(MoodTier::Primary.to_string(), "primary");
         assert_eq!(MoodTier::Refined.to_string(), "refined");
         assert_eq!(MoodTier::Contextual.to_string(), "contextual");
+    }
+
+    #[test]
+    fn test_mood_score_serialization() {
+        let score = MoodScore {
+            mood: "energetic".to_string(),
+            name: "Energetic".to_string(),
+            confidence: 0.85,
+            tier: MoodTier::Primary,
+        };
+
+        let json = serde_json::to_string(&score).unwrap();
+        assert!(json.contains("energetic"));
+        assert!(json.contains("0.85"));
+
+        let decoded: MoodScore = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.mood, "energetic");
+        assert_eq!(decoded.tier, MoodTier::Primary);
+    }
+
+    #[test]
+    fn test_mood_classification_serialization() {
+        let classification = MoodClassification {
+            moods: vec![MoodScore {
+                mood: "happy".to_string(),
+                name: "Happy".to_string(),
+                confidence: 0.9,
+                tier: MoodTier::Refined,
+            }],
+            valence: Some(0.7),
+            arousal: Some(0.5),
+            primary_mood: Some("energetic".to_string()),
+        };
+
+        let json = serde_json::to_string(&classification).unwrap();
+        assert!(json.contains("happy"));
+        assert!(json.contains("0.7"));
+
+        let decoded: MoodClassification = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.moods.len(), 1);
+        assert_eq!(decoded.valence, Some(0.7));
+    }
+
+    #[test]
+    fn test_mood_classification_optional_fields() {
+        let classification = MoodClassification {
+            moods: vec![],
+            valence: None,
+            arousal: None,
+            primary_mood: None,
+        };
+
+        let json = serde_json::to_string(&classification).unwrap();
+        // Optional fields should be skipped when None
+        assert!(!json.contains("valence"));
+        assert!(!json.contains("arousal"));
+        assert!(!json.contains("primary_mood"));
     }
 }
