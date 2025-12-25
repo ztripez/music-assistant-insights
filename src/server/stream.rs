@@ -451,10 +451,22 @@ impl StreamSessionManager {
         format: AudioFormat,
         sample_rate: u32,
         channels: u8,
+        replace_existing: bool,
     ) -> Result<Uuid, StreamError> {
         // Check for existing session for this track
-        if self.track_sessions.contains_key(&track_id) {
-            return Err(StreamError::SessionExists(track_id));
+        if let Some(&existing_id) = self.track_sessions.get(&track_id) {
+            if replace_existing {
+                // Remove the existing session
+                self.sessions.remove(&existing_id);
+                self.track_sessions.remove(&track_id);
+                info!(
+                    old_session_id = %existing_id,
+                    track_id = %track_id,
+                    "Replaced existing session for track"
+                );
+            } else {
+                return Err(StreamError::SessionExists(track_id));
+            }
         }
 
         let session =
@@ -580,6 +592,7 @@ pub async fn start_stream(
         request.format,
         request.sample_rate,
         request.channels,
+        request.replace_existing,
     ) {
         Ok(session_id) => {
             info!(

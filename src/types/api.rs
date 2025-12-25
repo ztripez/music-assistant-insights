@@ -748,6 +748,15 @@ pub struct StartStreamRequest {
 
     /// Number of channels (1 = mono, 2 = stereo)
     pub channels: u8,
+
+    /// If true, replace any existing session for this track (default: true)
+    #[serde(default = "default_replace_existing")]
+    pub replace_existing: bool,
+}
+
+#[cfg(feature = "inference")]
+fn default_replace_existing() -> bool {
+    true
 }
 
 /// Response from starting a streaming session
