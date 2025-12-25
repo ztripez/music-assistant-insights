@@ -14,7 +14,7 @@ rocm = ["inference", "ort/rocm"]
 coreml = ["inference", "ort/coreml"]
 directml = ["inference", "ort/directml"]
 openvino = ["inference", "ort/openvino"]
-inference = ["dep:ort", "dep:ndarray", "dep:rubato", "dep:reqwest", "dep:sha2", "dep:tokio-util", "dep:tokenizers"]
+inference = ["dep:ort", "dep:ndarray", "dep:rubato", "dep:reqwest", "dep:sha2", "dep:tokio-util", "dep:tokenizers", "dep:mel_spec"]
 storage = ["dep:qdrant-client"]
 storage-file = ["dep:usearch", "dep:bincode"]
 audio = ["dep:symphonia"]
@@ -87,6 +87,8 @@ chrono = "0.4"
 futures-util = "0.3"
 directories = "5"
 urlencoding = "2"
+mel_spec = { version = "0.3.3", optional = true }
+dashmap = "6.1.0"
 
 [dev-dependencies]
 tokio-test = "0.4"

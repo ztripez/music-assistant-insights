@@ -8,7 +8,7 @@ use ort::value::Tensor;
 use tokenizers::Tokenizer;
 use tracing::{debug, info, warn};
 
-use super::{AudioData, AudioProcessor, Embedding, InferenceError, ModelPaths, EMBEDDING_DIM};
+use super::{AudioData, AudioProcessor, Embedding, InferenceError, MelFeatures, ModelPaths, EMBEDDING_DIM};
 
 /// Maximum sequence length for CLAP text models
 const MAX_SEQ_LENGTH: usize = 77;
@@ -413,20 +413,20 @@ impl ClapModel {
             .lock()
             .map_err(|e| InferenceError::AudioProcessing(e.to_string()))?;
 
-        // Preprocess audio to windows
-        let windows = processor.process(audio)?;
+        // Preprocess audio to mel spectrogram windows
+        let mel_features = processor.process(audio)?;
 
-        if windows.is_empty() {
+        if mel_features.is_empty() {
             return Err(InferenceError::AudioProcessing(
-                "No audio windows extracted".to_string(),
+                "No mel spectrogram windows extracted".to_string(),
             ));
         }
 
         // Generate embedding for each window and average
         let mut embeddings: Vec<Vec<f32>> = Vec::new();
 
-        for window in &windows {
-            let output = self.run_audio_inference(window)?;
+        for mel in &mel_features {
+            let output = self.run_audio_inference(mel)?;
             embeddings.push(output);
         }
 
@@ -448,11 +448,35 @@ impl ClapModel {
         Ok(embedding)
     }
 
-    fn run_audio_inference(&self, samples: &[f32]) -> Result<Vec<f32>, InferenceError> {
-        // CLAP audio models expect [batch, samples]
-        let input =
-            Tensor::from_array(([1usize, samples.len()], samples.to_vec().into_boxed_slice()))
-                .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+    /// Run audio inference on pre-computed mel spectrogram features
+    ///
+    /// This is used by streaming to defer inference to session finalization.
+    /// Returns raw embedding vector (not normalized).
+    pub fn run_audio_inference_from_mel(
+        &self,
+        mel_features: &MelFeatures,
+    ) -> Result<Vec<f32>, InferenceError> {
+        self.run_audio_inference(mel_features)
+    }
+
+    fn run_audio_inference(&self, mel_features: &MelFeatures) -> Result<Vec<f32>, InferenceError> {
+        // CLAP audio models expect input_features with shape [batch, channels, height, width]
+        // where:
+        // - batch = 1
+        // - channels = 1 (mono mel spectrogram)
+        // - height = spec_size (256 time frames, resized)
+        // - width = n_mels (64 mel frequency bins)
+        // Data is in row-major order [height, width] already
+
+        let shape = [1usize, 1, mel_features.height, mel_features.width];
+        let input = Tensor::from_array((shape, mel_features.data.clone().into_boxed_slice()))
+            .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+
+        debug!(
+            tensor_shape = ?shape,
+            data_len = mel_features.data.len(),
+            "Audio model input tensor"
+        );
 
         // Lock session for inference
         let mut session = self

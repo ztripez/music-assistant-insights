@@ -78,7 +78,7 @@ impl AppState {
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
             #[cfg(feature = "inference")]
-            stream_manager: Arc::new(RwLock::new(StreamSessionManager::new())),
+            stream_manager: Arc::new(StreamSessionManager::new()),
             started_at: Instant::now(),
         }
     }
@@ -95,7 +95,7 @@ impl AppState {
             storage: None,
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
-            stream_manager: Arc::new(RwLock::new(StreamSessionManager::new())),
+            stream_manager: Arc::new(StreamSessionManager::new()),
             started_at: Instant::now(),
         }
     }
@@ -115,7 +115,7 @@ impl AppState {
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
             #[cfg(feature = "inference")]
-            stream_manager: Arc::new(RwLock::new(StreamSessionManager::new())),
+            stream_manager: Arc::new(StreamSessionManager::new()),
             started_at: Instant::now(),
         }
     }
@@ -139,7 +139,7 @@ impl AppState {
             storage: Some(Arc::new(storage)),
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
-            stream_manager: Arc::new(RwLock::new(StreamSessionManager::new())),
+            stream_manager: Arc::new(StreamSessionManager::new()),
             started_at: Instant::now(),
         }
     }

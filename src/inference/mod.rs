@@ -3,13 +3,13 @@
 //! This module provides text and audio embedding generation using CLAP
 //! (Contrastive Language-Audio Pretraining) models via ONNX Runtime.
 
-mod audio;
+pub mod audio;
 mod download;
 mod model;
 pub mod registry;
 mod text;
 
-pub use audio::{AudioData, AudioFormat, AudioProcessor};
+pub use audio::{AudioData, AudioFormat, AudioProcessor, MelFeatures, resize_mel_spectrogram};
 pub use download::{
     download_model, get_cache_dir, get_model_dir, get_model_size, is_model_downloaded,
     DownloadManager, ModelPaths,

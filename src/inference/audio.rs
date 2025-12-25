@@ -1,11 +1,14 @@
 //! Audio preprocessing for CLAP model.
 //!
-//! CLAP expects mono audio at 48kHz. This module handles:
+//! CLAP expects mel spectrogram features at 48kHz. This module handles:
 //! - Format conversion (PCM s16/s24/f32 to f32)
 //! - Stereo to mono conversion
 //! - Resampling to 48kHz
+//! - Mel spectrogram computation
 //! - Windowing for long audio
 
+use mel_spec::mel::mel;
+use mel_spec::stft::Spectrogram;
 use rubato::{FftFixedIn, Resampler};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -13,8 +16,16 @@ use tracing::debug;
 use super::InferenceError;
 
 /// Target sample rate for CLAP models
-#[allow(dead_code)]
 pub const TARGET_SAMPLE_RATE: u32 = 48_000;
+
+/// CLAP mel spectrogram parameters (from ClapFeatureExtractor)
+pub const CLAP_N_FFT: usize = 1024;
+pub const CLAP_HOP_LENGTH: usize = 480;
+pub const CLAP_N_MELS: usize = 64;
+pub const CLAP_F_MIN: f32 = 0.0;
+pub const CLAP_F_MAX: f32 = 14_000.0;
+/// CLAP spectrogram size (time dimension) that the HTSAT model expects
+pub const CLAP_SPEC_SIZE: usize = 256;
 
 /// Audio format enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,11 +108,25 @@ impl AudioData {
     }
 }
 
+/// Mel spectrogram features for a single audio window
+/// Shape: [spec_size (height), n_mels (width)] flattened to 1D in row-major order
+/// This matches CLAP's expected input: [batch, 1, height, width] = [1, 1, spec_size, n_mels]
+#[derive(Debug, Clone)]
+pub struct MelFeatures {
+    /// Flattened mel spectrogram data in row-major order [spec_size, n_mels]
+    pub data: Vec<f32>,
+    /// Spectrogram height (time frames, resized to CLAP_SPEC_SIZE=256)
+    pub height: usize,
+    /// Spectrogram width (mel bins = 64)
+    pub width: usize,
+}
+
 /// Audio processor for preparing audio for CLAP inference
 pub struct AudioProcessor {
     target_sample_rate: u32,
     window_samples: usize,
     hop_samples: usize,
+    mel_filterbank: ndarray::Array2<f32>,
 }
 
 impl AudioProcessor {
@@ -115,17 +140,39 @@ impl AudioProcessor {
         let window_samples = (target_sample_rate as f32 * window_size_s) as usize;
         let hop_samples = (target_sample_rate as f32 * hop_size_s) as usize;
 
+        // Create mel filterbank using mel_spec crate
+        // mel() returns Array2<f64>, we convert to f32
+        let mel_fb_f64 = mel(
+            target_sample_rate as f64,
+            CLAP_N_FFT,
+            CLAP_N_MELS,
+            Some(CLAP_F_MIN as f64),
+            Some(CLAP_F_MAX as f64),
+            false, // htk-style
+            true,  // normalize (slaney style)
+        );
+        let mel_filterbank = mel_fb_f64.mapv(|x| x as f32);
+
+        debug!(
+            n_mels = CLAP_N_MELS,
+            n_fft = CLAP_N_FFT,
+            hop_length = CLAP_HOP_LENGTH,
+            filterbank_shape = ?mel_filterbank.shape(),
+            "Mel filterbank created"
+        );
+
         Self {
             target_sample_rate,
             window_samples,
             hop_samples,
+            mel_filterbank,
         }
     }
 
-    /// Process audio data into windows suitable for CLAP inference
+    /// Process audio data into mel spectrogram windows suitable for CLAP inference
     ///
-    /// Returns a vector of f32 sample windows, each of length `window_samples`
-    pub fn process(&mut self, audio: &AudioData) -> Result<Vec<Vec<f32>>, InferenceError> {
+    /// Returns a vector of MelFeatures, each representing a time window's mel spectrogram
+    pub fn process(&mut self, audio: &AudioData) -> Result<Vec<MelFeatures>, InferenceError> {
         // Convert to f32
         let samples = audio.to_f32_samples()?;
         let original_len = samples.len();
@@ -157,11 +204,127 @@ impl AudioProcessor {
             "Audio preprocessed"
         );
 
-        // Extract windows
+        // Extract audio windows
         let windows = extract_windows(&resampled, self.window_samples, self.hop_samples);
 
-        Ok(windows)
+        // Convert each window to mel spectrogram
+        let mut mel_features = Vec::with_capacity(windows.len());
+        for window in windows {
+            let mel = self.compute_mel_spectrogram(&window)?;
+            mel_features.push(mel);
+        }
+
+        Ok(mel_features)
     }
+
+    /// Compute mel spectrogram for a single audio window
+    fn compute_mel_spectrogram(&self, samples: &[f32]) -> Result<MelFeatures, InferenceError> {
+        // Create STFT processor using mel_spec crate
+        let mut stft = Spectrogram::new(CLAP_N_FFT, CLAP_HOP_LENGTH);
+
+        // Collect all STFT frames as power spectra
+        // mel_spec's Spectrogram::add returns Option<Array1<Complex<f64>>>
+        let mut power_frames: Vec<Vec<f32>> = Vec::new();
+
+        // Process samples through STFT
+        for chunk in samples.chunks(CLAP_HOP_LENGTH) {
+            if let Some(fft_result) = stft.add(chunk) {
+                // fft_result is Array1<Complex<f64>>, compute power spectrum (magnitude squared)
+                let power: Vec<f32> = fft_result
+                    .iter()
+                    .map(|c| (c.re * c.re + c.im * c.im) as f32)
+                    .collect();
+                power_frames.push(power);
+            }
+        }
+
+        if power_frames.is_empty() {
+            return Err(InferenceError::AudioProcessing(
+                "No STFT frames produced".to_string(),
+            ));
+        }
+
+        // Apply mel filterbank to each power spectrum frame
+        // filterbank shape: [n_mels, n_fft/2 + 1]
+        // power frame shape: [n_fft/2 + 1] or [n_fft] depending on mel_spec output
+        let n_freqs = CLAP_N_FFT / 2 + 1;
+        let time_frames = power_frames.len();
+
+        // Build mel spectrogram: [n_mels, time_frames] (intermediate format)
+        let mut mel_spec_raw = vec![0.0f32; CLAP_N_MELS * time_frames];
+
+        for (t, power_frame) in power_frames.iter().enumerate() {
+            // Use only the first n_freqs bins (positive frequencies)
+            let frame_len = power_frame.len().min(n_freqs);
+
+            // Apply mel filterbank: mel_spec[m, t] = filterbank[m, :] @ power
+            for m in 0..CLAP_N_MELS {
+                let mut sum = 0.0f32;
+                for f in 0..frame_len {
+                    sum += self.mel_filterbank[[m, f]] * power_frame[f];
+                }
+                // Apply log scaling (add small epsilon to avoid log(0))
+                mel_spec_raw[m * time_frames + t] = (sum + 1e-10).ln();
+            }
+        }
+
+        debug!(
+            n_mels = CLAP_N_MELS,
+            time_frames = time_frames,
+            target_spec_size = CLAP_SPEC_SIZE,
+            "Mel spectrogram computed, resizing..."
+        );
+
+        // Resize to [CLAP_SPEC_SIZE, CLAP_N_MELS] for CLAP model
+        // CLAP expects shape [batch, 1, height=spec_size, width=n_mels]
+        // So we need to transpose [n_mels, time_frames] -> [time_frames, n_mels]
+        // and then resize time_frames to CLAP_SPEC_SIZE using linear interpolation
+        let resized = resize_mel_spectrogram(&mel_spec_raw, CLAP_N_MELS, time_frames, CLAP_SPEC_SIZE);
+
+        Ok(MelFeatures {
+            data: resized,
+            height: CLAP_SPEC_SIZE,
+            width: CLAP_N_MELS,
+        })
+    }
+}
+
+/// Resize mel spectrogram from [n_mels, src_time] to [dst_time, n_mels]
+/// This transposes and resizes in one pass using linear interpolation along time axis
+pub fn resize_mel_spectrogram(
+    data: &[f32],
+    n_mels: usize,
+    src_time: usize,
+    dst_time: usize,
+) -> Vec<f32> {
+    let mut result = vec![0.0f32; dst_time * n_mels];
+
+    // For each output time frame
+    for t_out in 0..dst_time {
+        // Map to source time position (linear interpolation)
+        let t_src = if dst_time > 1 {
+            (t_out as f32) * ((src_time - 1) as f32) / ((dst_time - 1) as f32)
+        } else {
+            0.0
+        };
+
+        let t_low = t_src.floor() as usize;
+        let t_high = (t_low + 1).min(src_time - 1);
+        let t_frac = t_src - t_low as f32;
+
+        // Interpolate each mel bin for this time frame
+        for m in 0..n_mels {
+            // Source is [n_mels, src_time]: src[m, t] = data[m * src_time + t]
+            let val_low = data[m * src_time + t_low];
+            let val_high = data[m * src_time + t_high];
+            let interpolated = val_low * (1.0 - t_frac) + val_high * t_frac;
+
+            // Output is [dst_time, n_mels]: result[t, m] = result[t * n_mels + m]
+            result[t_out * n_mels + m] = interpolated;
+        }
+    }
+
+    result
 }
 
 /// Convert stereo samples to mono by averaging channels

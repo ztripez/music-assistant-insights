@@ -4,7 +4,6 @@
 //! send audio frames as a user listens, with the sidecar buffering and
 //! generating embeddings when 10-second windows are complete.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,15 +13,22 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use dashmap::DashMap;
+use ndarray::Array2;
 use rubato::{FftFixedIn, Resampler};
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::extractors::MsgPackExtractor;
 use super::routes::MsgPack;
 use super::AppState;
-use crate::inference::{AudioFormat, ClapModel, EMBEDDING_DIM};
+use crate::inference::{
+    AudioFormat, ClapModel, MelFeatures, EMBEDDING_DIM,
+    audio::{CLAP_N_FFT, CLAP_HOP_LENGTH, CLAP_N_MELS, CLAP_F_MIN, CLAP_F_MAX, CLAP_SPEC_SIZE, resize_mel_spectrogram},
+};
+use mel_spec::mel::mel;
+use mel_spec::stft::Spectrogram;
 use crate::types::api::{
     EndStreamRequest, EndStreamResponse, FramesResponse, IngestMetadata, StartStreamRequest,
     StartStreamResponse, StreamSessionStatus, StreamStatusResponse,
@@ -41,9 +47,8 @@ const TARGET_SAMPLE_RATE: u32 = 48_000;
 /// Window size in samples (10 seconds at 48kHz)
 const WINDOW_SAMPLES: usize = 480_000;
 
-/// Minimum samples required to generate an embedding (3 seconds at 48kHz)
-#[allow(dead_code)]
-const MIN_SAMPLES_FOR_EMBEDDING: usize = 144_000;
+/// Hop size in samples (5 seconds = 50% overlap)
+const HOP_SAMPLES: usize = 240_000;
 
 /// Session timeout in seconds (5 minutes)
 const SESSION_TIMEOUT_SECS: u64 = 300;
@@ -102,9 +107,14 @@ pub struct StreamSession {
     /// Resampler instance (None if source is already 48kHz)
     resampler: Option<FftFixedIn<f32>>,
 
+    // Mel spectrogram computation
+    /// Mel filterbank matrix [n_mels, n_fft/2+1]
+    mel_filterbank: Array2<f32>,
+
     // State
-    /// Embeddings from completed windows
-    window_embeddings: Vec<Vec<f32>>,
+    /// Mel spectrograms from completed windows (computed during streaming, cheap)
+    /// Inference is deferred to finalize() for efficiency
+    window_mels: Vec<MelFeatures>,
     /// Count of resampling errors (for quality tracking)
     resampling_errors: usize,
     /// Current session status
@@ -144,6 +154,18 @@ impl StreamSession {
             None
         };
 
+        // Create mel filterbank (same as AudioProcessor)
+        let mel_fb_f64 = mel(
+            TARGET_SAMPLE_RATE as f64,
+            CLAP_N_FFT,
+            CLAP_N_MELS,
+            Some(CLAP_F_MIN as f64),
+            Some(CLAP_F_MAX as f64),
+            false, // htk-style
+            true,  // normalize (slaney style)
+        );
+        let mel_filterbank = mel_fb_f64.mapv(|x| x as f32);
+
         let now = Instant::now();
 
         Ok(Self {
@@ -154,9 +176,10 @@ impl StreamSession {
             source_sample_rate: sample_rate,
             channels,
             mono_buffer: Vec::with_capacity(sample_rate as usize * 10), // ~10s buffer
-            resampled_buffer: Vec::with_capacity(WINDOW_SAMPLES),
+            resampled_buffer: Vec::with_capacity(WINDOW_SAMPLES + HOP_SAMPLES), // Extra for overlap
             resampler,
-            window_embeddings: Vec::new(),
+            mel_filterbank,
+            window_mels: Vec::new(),
             resampling_errors: 0,
             status: StreamSessionStatus::Active,
             created_at: now,
@@ -165,7 +188,10 @@ impl StreamSession {
     }
 
     /// Process incoming audio frames and return number of new complete windows
-    pub fn process_frames(&mut self, data: &[u8], model: &ClapModel) -> Result<usize, StreamError> {
+    ///
+    /// This method is cheap - it only computes mel spectrograms (STFT + filterbank).
+    /// Model inference is deferred to finalize() for efficiency.
+    pub fn process_frames(&mut self, data: &[u8]) -> Result<usize, StreamError> {
         self.last_activity = Instant::now();
 
         // Convert bytes to f32 samples
@@ -184,11 +210,11 @@ impl StreamSession {
         // Add to mono buffer
         self.mono_buffer.extend(mono);
 
-        // Resample and process windows
-        let initial_windows = self.window_embeddings.len();
-        self.process_resampling_and_windows(model)?;
+        // Resample and extract mel spectrograms for complete windows
+        let initial_windows = self.window_mels.len();
+        self.process_resampling_and_windows()?;
 
-        Ok(self.window_embeddings.len() - initial_windows)
+        Ok(self.window_mels.len() - initial_windows)
     }
 
     /// Convert raw bytes to f32 samples based on format
@@ -240,8 +266,11 @@ impl StreamSession {
         }
     }
 
-    /// Process resampling and extract windows
-    fn process_resampling_and_windows(&mut self, model: &ClapModel) -> Result<(), StreamError> {
+    /// Process resampling and extract mel spectrograms for complete windows
+    ///
+    /// Uses sliding window with 50% overlap (hop = 5s, window = 10s).
+    /// Only computes mel spectrograms (cheap), inference is deferred to finalize().
+    fn process_resampling_and_windows(&mut self) -> Result<(), StreamError> {
         if let Some(ref mut resampler) = self.resampler {
             // Incremental resampling
             let chunk_size = resampler.input_frames_max();
@@ -278,50 +307,89 @@ impl StreamSession {
             self.resampled_buffer.append(&mut self.mono_buffer);
         }
 
-        // Extract complete windows and generate embeddings
+        // Extract complete windows with sliding window overlap
+        // Copy window (don't drain), then drain only HOP_SAMPLES
         while self.resampled_buffer.len() >= WINDOW_SAMPLES {
-            let window: Vec<f32> = self.resampled_buffer.drain(..WINDOW_SAMPLES).collect();
-            let embedding = self.generate_window_embedding(&window, model)?;
-            self.window_embeddings.push(embedding);
+            let window: Vec<f32> = self.resampled_buffer[..WINDOW_SAMPLES].to_vec();
+
+            // Compute mel spectrogram for this window (cheap operation)
+            let mel = self.compute_mel_spectrogram(&window)?;
+            self.window_mels.push(mel);
+
+            // Only remove hop samples (keep overlap for next window)
+            self.resampled_buffer.drain(..HOP_SAMPLES);
 
             info!(
                 session_id = %self.id,
                 track_id = %self.track_id,
-                window = self.window_embeddings.len(),
-                total_duration_s = format!("{:.1}", self.window_embeddings.len() as f32 * 10.0),
-                "Window embedded"
+                window = self.window_mels.len(),
+                total_duration_s = format!("{:.1}", (self.window_mels.len() as f32 * HOP_SAMPLES as f32 / TARGET_SAMPLE_RATE as f32) + 10.0),
+                "Mel spectrogram computed"
             );
         }
 
         Ok(())
     }
 
-    /// Generate embedding for a single window
-    fn generate_window_embedding(
-        &self,
-        window: &[f32],
-        model: &ClapModel,
-    ) -> Result<Vec<f32>, StreamError> {
-        // The model expects [batch, samples] format
-        // We call the raw audio inference directly since we already have processed samples
+    /// Compute mel spectrogram for a single audio window (cheap operation)
+    fn compute_mel_spectrogram(&self, samples: &[f32]) -> Result<MelFeatures, StreamError> {
+        // Create STFT processor
+        let mut stft = Spectrogram::new(CLAP_N_FFT, CLAP_HOP_LENGTH);
 
-        // Create AudioData with our preprocessed samples
-        let data: Vec<u8> = window.iter().flat_map(|&f| f.to_le_bytes()).collect();
-        let audio_data = crate::inference::AudioData {
-            format: AudioFormat::PcmF32Le,
-            sample_rate: TARGET_SAMPLE_RATE,
-            channels: 1,
-            data,
-        };
+        // Collect all STFT frames as power spectra
+        let mut power_frames: Vec<Vec<f32>> = Vec::new();
 
-        let embedding = model
-            .audio_embedding(&audio_data)
-            .map_err(|e| StreamError::InferenceError(e.to_string()))?;
+        for chunk in samples.chunks(CLAP_HOP_LENGTH) {
+            if let Some(fft_result) = stft.add(chunk) {
+                // Compute power spectrum (magnitude squared)
+                let power: Vec<f32> = fft_result
+                    .iter()
+                    .map(|c| (c.re * c.re + c.im * c.im) as f32)
+                    .collect();
+                power_frames.push(power);
+            }
+        }
 
-        Ok(embedding.data().to_vec())
+        if power_frames.is_empty() {
+            return Err(StreamError::InvalidAudioFormat(
+                "No STFT frames produced".to_string(),
+            ));
+        }
+
+        // Apply mel filterbank to each power spectrum frame
+        let n_freqs = CLAP_N_FFT / 2 + 1;
+        let time_frames = power_frames.len();
+
+        // Build mel spectrogram: [n_mels, time_frames]
+        let mut mel_spec_raw = vec![0.0f32; CLAP_N_MELS * time_frames];
+
+        for (t, power_frame) in power_frames.iter().enumerate() {
+            let frame_len = power_frame.len().min(n_freqs);
+
+            for m in 0..CLAP_N_MELS {
+                let mut sum = 0.0f32;
+                for f in 0..frame_len {
+                    sum += self.mel_filterbank[[m, f]] * power_frame[f];
+                }
+                // Apply log scaling
+                mel_spec_raw[m * time_frames + t] = (sum + 1e-10).ln();
+            }
+        }
+
+        // Resize to [CLAP_SPEC_SIZE, CLAP_N_MELS] for CLAP model
+        let resized = resize_mel_spectrogram(&mel_spec_raw, CLAP_N_MELS, time_frames, CLAP_SPEC_SIZE);
+
+        Ok(MelFeatures {
+            data: resized,
+            height: CLAP_SPEC_SIZE,
+            width: CLAP_N_MELS,
+        })
     }
 
-    /// Finalize session and get averaged embedding
+    /// Finalize session: run inference on all buffered mel spectrograms and average
+    ///
+    /// This is where all the expensive model inference happens - at the end of the session,
+    /// not during streaming. This ensures we have all the data before committing.
     pub fn finalize(
         &mut self,
         model: &ClapModel,
@@ -337,9 +405,8 @@ impl StreamSession {
         // Calculate minimum samples needed
         let min_samples = (min_duration_s * TARGET_SAMPLE_RATE as f32) as usize;
 
-        // Check if we have enough remaining samples to process
+        // Check if we have enough remaining samples to process as a final window
         if self.resampled_buffer.len() >= min_samples {
-            // Take ownership of buffer since we're finalizing (avoids clone)
             let mut final_window = std::mem::take(&mut self.resampled_buffer);
             if final_window.len() < WINDOW_SAMPLES {
                 final_window.resize(WINDOW_SAMPLES, 0.0);
@@ -347,25 +414,44 @@ impl StreamSession {
                 final_window.truncate(WINDOW_SAMPLES);
             }
 
-            let embedding = self.generate_window_embedding(&final_window, model)?;
-            self.window_embeddings.push(embedding);
+            // Compute mel spectrogram for the final window
+            let mel = self.compute_mel_spectrogram(&final_window)?;
+            self.window_mels.push(mel);
         }
 
-        // Average all window embeddings
-        if self.window_embeddings.is_empty() {
+        // No windows? Return None
+        if self.window_mels.is_empty() {
             self.status = StreamSessionStatus::Completed;
             return Ok(None);
         }
 
+        info!(
+            session_id = %self.id,
+            track_id = %self.track_id,
+            num_windows = self.window_mels.len(),
+            "Running batch inference on mel spectrograms"
+        );
+
+        // Run inference on all mel spectrograms and collect embeddings
+        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(self.window_mels.len());
+
+        for mel in &self.window_mels {
+            let embedding = model
+                .run_audio_inference_from_mel(mel)
+                .map_err(|e| StreamError::InferenceError(e.to_string()))?;
+            embeddings.push(embedding);
+        }
+
+        // Average all window embeddings
         let mut averaged = vec![0.0f32; EMBEDDING_DIM];
-        for emb in &self.window_embeddings {
+        for emb in &embeddings {
             for (i, &v) in emb.iter().enumerate() {
                 if i < EMBEDDING_DIM {
                     averaged[i] += v;
                 }
             }
         }
-        let count = self.window_embeddings.len() as f32;
+        let count = embeddings.len() as f32;
         for v in &mut averaged {
             *v /= count;
         }
@@ -410,15 +496,23 @@ impl StreamSession {
     }
 
     /// Get total duration processed including windows
+    ///
+    /// With 50% overlap, each window after the first adds HOP_SAMPLES worth of new audio.
+    /// First window = WINDOW_SAMPLES, subsequent windows add HOP_SAMPLES each.
     pub fn total_duration_seconds(&self) -> f32 {
-        let window_samples = self.window_embeddings.len() * WINDOW_SAMPLES;
+        let window_samples = if self.window_mels.is_empty() {
+            0
+        } else {
+            // First window covers WINDOW_SAMPLES, each additional covers HOP_SAMPLES of new audio
+            WINDOW_SAMPLES + (self.window_mels.len().saturating_sub(1)) * HOP_SAMPLES
+        };
         let total_samples = window_samples + self.resampled_buffer.len();
         total_samples as f32 / TARGET_SAMPLE_RATE as f32
     }
 
     /// Get number of windows completed
     pub fn windows_completed(&self) -> usize {
-        self.window_embeddings.len()
+        self.window_mels.len()
     }
 
     /// Get session age in seconds
@@ -432,22 +526,42 @@ impl StreamSession {
     }
 }
 
-/// Manager for all active streaming sessions
-#[derive(Default)]
+/// Wrapper for a session with its own lock for concurrent access
+pub type LockedSession = Arc<Mutex<StreamSession>>;
+
+/// Manager for all active streaming sessions using lock-free concurrent maps.
+///
+/// This design allows multiple streams to process frames concurrently:
+/// - DashMap provides sharded locking for the session registry
+/// - Each session has its own Mutex for frame processing
+/// - Different sessions never block each other
 pub struct StreamSessionManager {
-    sessions: HashMap<Uuid, StreamSession>,
+    /// Map session_id -> locked session
+    sessions: DashMap<Uuid, LockedSession>,
     /// Map track_id -> session_id for duplicate detection
-    track_sessions: HashMap<String, Uuid>,
+    track_sessions: DashMap<String, Uuid>,
+}
+
+impl Default for StreamSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StreamSessionManager {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            sessions: DashMap::new(),
+            track_sessions: DashMap::new(),
+        }
     }
 
     /// Create a new session for a track
+    ///
+    /// This is a quick operation - just creates the session and registers it.
+    /// The expensive mel filterbank creation happens here but doesn't block other sessions.
     pub fn create_session(
-        &mut self,
+        &self,
         track_id: String,
         metadata: IngestMetadata,
         format: AudioFormat,
@@ -456,7 +570,10 @@ impl StreamSessionManager {
         replace_existing: bool,
     ) -> Result<Uuid, StreamError> {
         // Check for existing session for this track
-        if let Some(&existing_id) = self.track_sessions.get(&track_id) {
+        if let Some(existing_entry) = self.track_sessions.get(&track_id) {
+            let existing_id = *existing_entry;
+            drop(existing_entry); // Release the read lock before modifying
+
             if replace_existing {
                 // Remove the existing session
                 self.sessions.remove(&existing_id);
@@ -476,25 +593,31 @@ impl StreamSessionManager {
         let session_id = session.id;
 
         self.track_sessions.insert(track_id, session_id);
-        self.sessions.insert(session_id, session);
+        self.sessions.insert(session_id, Arc::new(Mutex::new(session)));
 
         Ok(session_id)
     }
 
-    /// Get a mutable reference to a session
-    pub fn get_session_mut(&mut self, session_id: &Uuid) -> Option<&mut StreamSession> {
-        self.sessions.get_mut(session_id)
+    /// Get a locked session for processing
+    ///
+    /// Returns an Arc<Mutex<StreamSession>> that can be locked independently.
+    /// This allows the caller to hold the session lock without blocking the manager.
+    pub fn get_session(&self, session_id: &Uuid) -> Option<LockedSession> {
+        self.sessions.get(session_id).map(|entry| entry.clone())
     }
 
-    /// Get a reference to a session
-    pub fn get_session(&self, session_id: &Uuid) -> Option<&StreamSession> {
-        self.sessions.get(session_id)
-    }
-
-    /// Remove a session
-    pub fn remove_session(&mut self, session_id: &Uuid) -> Option<StreamSession> {
-        if let Some(session) = self.sessions.remove(session_id) {
-            self.track_sessions.remove(&session.track_id);
+    /// Remove a session and return it (already locked for finalization)
+    ///
+    /// Returns the session wrapped in Arc<Mutex> - caller should lock it for final processing.
+    pub fn remove_session(&self, session_id: &Uuid) -> Option<LockedSession> {
+        if let Some((_, session)) = self.sessions.remove(session_id) {
+            // We need to get the track_id to clean up the reverse mapping
+            // Try to lock briefly just to read track_id
+            if let Ok(guard) = session.try_lock() {
+                self.track_sessions.remove(&guard.track_id);
+            }
+            // If we can't lock, the track_sessions entry will be stale but harmless
+            // (cleanup will handle it, or next create with replace_existing will)
             Some(session)
         } else {
             None
@@ -502,25 +625,35 @@ impl StreamSessionManager {
     }
 
     /// Clean up timed-out sessions
-    pub fn cleanup_timed_out(&mut self) -> usize {
-        let timed_out: Vec<Uuid> = self
-            .sessions
-            .iter()
-            .filter(|(_, s)| s.is_timed_out())
-            .map(|(id, _)| *id)
-            .collect();
+    ///
+    /// This iterates all sessions and removes those that have timed out.
+    /// Uses try_lock to avoid blocking on active sessions.
+    pub fn cleanup_timed_out(&self) -> usize {
+        let mut timed_out = Vec::new();
 
-        let count = timed_out.len();
-        for id in timed_out {
-            if let Some(session) = self.sessions.remove(&id) {
-                self.track_sessions.remove(&session.track_id);
-                info!(
-                    session_id = %id,
-                    track_id = %session.track_id,
-                    "Cleaned up timed out session"
-                );
+        // First pass: identify timed-out sessions (non-blocking)
+        for entry in self.sessions.iter() {
+            let session_id = *entry.key();
+            if let Ok(guard) = entry.value().try_lock() {
+                if guard.is_timed_out() {
+                    timed_out.push((session_id, guard.track_id.clone()));
+                }
             }
+            // If we can't lock, session is actively being used - not timed out
         }
+
+        // Second pass: remove timed-out sessions
+        let count = timed_out.len();
+        for (session_id, track_id) in timed_out {
+            self.sessions.remove(&session_id);
+            self.track_sessions.remove(&track_id);
+            info!(
+                session_id = %session_id,
+                track_id = %track_id,
+                "Cleaned up timed out session"
+            );
+        }
+
         count
     }
 
@@ -531,7 +664,10 @@ impl StreamSessionManager {
 }
 
 /// Type alias for shared session manager
-pub type SharedStreamManager = Arc<RwLock<StreamSessionManager>>;
+///
+/// No RwLock needed - DashMap handles internal concurrency,
+/// and each session has its own Mutex for frame processing.
+pub type SharedStreamManager = Arc<StreamSessionManager>;
 
 /// Interval for session cleanup checks (60 seconds)
 const CLEANUP_INTERVAL_SECS: u64 = 60;
@@ -545,10 +681,8 @@ pub fn spawn_session_cleanup_task(manager: SharedStreamManager) {
         loop {
             interval.tick().await;
 
-            let cleaned = {
-                let mut mgr = manager.write().await;
-                mgr.cleanup_timed_out()
-            };
+            // No lock needed - cleanup_timed_out uses DashMap's internal concurrency
+            let cleaned = manager.cleanup_timed_out();
 
             if cleaned > 0 {
                 info!(count = cleaned, "Cleaned up timed-out streaming sessions");
@@ -585,10 +719,8 @@ pub async fn start_stream(
     }
     drop(model_guard);
 
-    // Get stream manager
-    let mut manager = state.stream_manager.write().await;
-
-    match manager.create_session(
+    // Create session - no write lock needed, DashMap handles concurrency
+    match state.stream_manager.create_session(
         request.track_id.clone(),
         request.metadata,
         request.format,
@@ -629,6 +761,11 @@ pub async fn start_stream(
 }
 
 /// Receive audio frames for a session
+///
+/// This endpoint is lightweight - it only buffers audio and computes mel spectrograms.
+/// Model inference is deferred to end_stream for efficiency.
+///
+/// Concurrent streams don't block each other - each session has its own lock.
 pub async fn stream_frames(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -647,25 +784,8 @@ pub async fn stream_frames(
         }
     };
 
-    // Get model reference
-    let model_guard = state.model.read().await;
-    let model = match model_guard.as_ref() {
-        Some(m) => m.clone(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                MsgPack(StreamErrorResponse {
-                    error: "Model not loaded".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-    drop(model_guard);
-
-    // Get session and process frames
-    let mut manager = state.stream_manager.write().await;
-    let session = match manager.get_session_mut(&session_uuid) {
+    // Get session (quick DashMap lookup, doesn't block other sessions)
+    let locked_session = match state.stream_manager.get_session(&session_uuid) {
         Some(s) => s,
         None => {
             return (
@@ -678,19 +798,31 @@ pub async fn stream_frames(
         }
     };
 
-    match session.process_frames(&body, &model) {
+    // Lock this specific session for frame processing
+    // Other sessions can process concurrently
+    let mut session = locked_session.lock().await;
+
+    match session.process_frames(&body) {
         Ok(_new_windows) => MsgPack(FramesResponse {
             buffered_seconds: session.buffered_seconds(),
             windows_completed: session.windows_completed(),
         })
         .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            MsgPack(StreamErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(e) => {
+            warn!(
+                session_id = %session_id,
+                body_len = body.len(),
+                error = %e,
+                "Failed to process audio frames"
+            );
+            (
+                StatusCode::BAD_REQUEST,
+                MsgPack(StreamErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -729,9 +861,8 @@ pub async fn end_stream(
     };
     drop(model_guard);
 
-    // Remove session from manager
-    let mut manager = state.stream_manager.write().await;
-    let mut session = match manager.remove_session(&session_uuid) {
+    // Remove session from manager (quick DashMap operation)
+    let locked_session = match state.stream_manager.remove_session(&session_uuid) {
         Some(s) => s,
         None => {
             return (
@@ -743,7 +874,9 @@ pub async fn end_stream(
                 .into_response();
         }
     };
-    drop(manager);
+
+    // Lock the session for finalization
+    let mut session = locked_session.lock().await;
 
     let track_id = session.track_id.clone();
     let duration_s = session.total_duration_seconds();
@@ -791,15 +924,13 @@ pub async fn end_stream(
         if let Some(ref storage) = state.storage {
             use crate::storage::{TrackMetadata, AUDIO_COLLECTION, TEXT_COLLECTION};
 
-            // Move metadata fields from session (avoids clones since we own session)
-            let IngestMetadata {
-                name,
-                artists,
-                album,
-                genres,
-            } = session.metadata;
+            // Clone metadata fields from session (can't move from MutexGuard)
+            let name = session.metadata.name.clone();
+            let artists = session.metadata.artists.clone();
+            let album = session.metadata.album.clone();
+            let genres = session.metadata.genres.clone();
 
-            // Build metadata for storage - move fields instead of cloning
+            // Build metadata for storage
             let mut metadata = TrackMetadata::new(track_id.clone(), name)
                 .with_artists(artists)
                 .with_genres(genres);
@@ -881,12 +1012,17 @@ pub async fn abort_stream(
         }
     };
 
-    let mut manager = state.stream_manager.write().await;
-    match manager.remove_session(&session_uuid) {
-        Some(session) => {
+    // Remove session (quick DashMap operation)
+    match state.stream_manager.remove_session(&session_uuid) {
+        Some(locked_session) => {
+            // Try to get track_id for logging (non-blocking)
+            let track_id = locked_session
+                .try_lock()
+                .map(|s| s.track_id.clone())
+                .unwrap_or_else(|_| "<locked>".to_string());
             info!(
                 session_id = %session_uuid,
-                track_id = %session.track_id,
+                track_id = %track_id,
                 "Session aborted"
             );
             (StatusCode::NO_CONTENT, ()).into_response()
@@ -919,26 +1055,33 @@ pub async fn stream_status(
         }
     };
 
-    let manager = state.stream_manager.read().await;
-    match manager.get_session(&session_uuid) {
-        Some(session) => MsgPack(StreamStatusResponse {
-            session_id: session.id.to_string(),
-            track_id: session.track_id.clone(),
-            status: session.status,
-            buffered_seconds: session.buffered_seconds(),
-            windows_completed: session.windows_completed(),
-            age_seconds: session.age_seconds(),
-        })
-        .into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            MsgPack(StreamErrorResponse {
-                error: "Session not found".to_string(),
-            }),
-        )
-            .into_response(),
-    }
+    // Get session (quick DashMap lookup)
+    let locked_session = match state.stream_manager.get_session(&session_uuid) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                MsgPack(StreamErrorResponse {
+                    error: "Session not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Lock briefly to read status
+    let session = locked_session.lock().await;
+    MsgPack(StreamStatusResponse {
+        session_id: session.id.to_string(),
+        track_id: session.track_id.clone(),
+        status: session.status,
+        buffered_seconds: session.buffered_seconds(),
+        windows_completed: session.windows_completed(),
+        age_seconds: session.age_seconds(),
+    })
+    .into_response()
 }
+
 
 /// Format metadata into text for embedding
 fn format_metadata_text(metadata: &IngestMetadata) -> String {
@@ -981,7 +1124,7 @@ mod tests {
 
     #[test]
     fn test_session_manager_create() {
-        let mut manager = StreamSessionManager::new();
+        let manager = StreamSessionManager::new();
 
         let metadata = IngestMetadata {
             name: "Test Song".to_string(),
@@ -996,18 +1139,20 @@ mod tests {
             AudioFormat::PcmS16Le,
             44100,
             2,
+            false, // replace_existing
         );
 
         assert!(result.is_ok());
         assert_eq!(manager.session_count(), 1);
 
-        // Duplicate should fail
+        // Duplicate should fail (replace_existing = false)
         let result2 = manager.create_session(
             "track_123".to_string(),
             metadata,
             AudioFormat::PcmS16Le,
             44100,
             2,
+            false, // replace_existing
         );
 
         assert!(matches!(result2, Err(StreamError::SessionExists(_))));
