@@ -24,6 +24,11 @@ pub struct AppConfig {
     /// Server configuration
     #[serde(default)]
     pub server: ServerConfig,
+
+    /// Folder watcher configuration
+    #[cfg(feature = "watcher")]
+    #[serde(default)]
+    pub watcher: crate::watcher::WatcherConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,9 +37,25 @@ pub struct ModelConfig {
     #[serde(default = "default_model")]
     pub name: String,
 
-    /// Enable CUDA acceleration
+    /// Enable CUDA acceleration (NVIDIA GPUs)
     #[serde(default)]
     pub enable_cuda: bool,
+
+    /// Enable ROCm acceleration (AMD GPUs)
+    #[serde(default)]
+    pub enable_rocm: bool,
+
+    /// Enable CoreML acceleration (Apple Silicon/macOS)
+    #[serde(default)]
+    pub enable_coreml: bool,
+
+    /// Enable DirectML acceleration (Windows GPU)
+    #[serde(default)]
+    pub enable_directml: bool,
+
+    /// Enable OpenVINO acceleration (Intel CPUs/GPUs/VPUs)
+    #[serde(default)]
+    pub enable_openvino: bool,
 }
 
 impl Default for ModelConfig {
@@ -42,6 +63,10 @@ impl Default for ModelConfig {
         Self {
             name: default_model(),
             enable_cuda: false,
+            enable_rocm: false,
+            enable_coreml: false,
+            enable_directml: false,
+            enable_openvino: false,
         }
     }
 }
@@ -191,6 +216,8 @@ impl Default for AppConfig {
             audio: AudioConfig::default(),
             storage: StorageConfig::default(),
             server: ServerConfig::default(),
+            #[cfg(feature = "watcher")]
+            watcher: crate::watcher::WatcherConfig::default(),
         }
     }
 }
@@ -291,10 +318,16 @@ mod tests {
             audio: AudioConfig::default(),
             storage: StorageConfig::default(),
             server: ServerConfig::default(),
+            #[cfg(feature = "watcher")]
+            watcher: crate::watcher::WatcherConfig::default(),
         };
 
         assert_eq!(config.model.name, "Xenova/clap-htsat-unfused");
         assert!(!config.model.enable_cuda);
+        assert!(!config.model.enable_rocm);
+        assert!(!config.model.enable_coreml);
+        assert!(!config.model.enable_directml);
+        assert!(!config.model.enable_openvino);
         assert_eq!(config.audio.window_size_s, 10.0);
         assert_eq!(config.server.port, 8096);
         assert_eq!(config.storage.mode, StorageMode::File);

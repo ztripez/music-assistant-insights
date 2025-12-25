@@ -548,9 +548,21 @@ pub struct UpdateModelConfig {
     /// Model name/ID to use
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Enable CUDA acceleration
+    /// Enable CUDA acceleration (NVIDIA GPUs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_cuda: Option<bool>,
+    /// Enable ROCm acceleration (AMD GPUs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_rocm: Option<bool>,
+    /// Enable CoreML acceleration (Apple Silicon/macOS)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_coreml: Option<bool>,
+    /// Enable DirectML acceleration (Windows GPU)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_directml: Option<bool>,
+    /// Enable OpenVINO acceleration (Intel CPUs/GPUs/VPUs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_openvino: Option<bool>,
 }
 
 /// Storage configuration updates

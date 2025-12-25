@@ -54,9 +54,25 @@ struct Cli {
     #[arg(long, env = "INSIGHT_MODEL__NAME")]
     model: Option<String>,
 
-    /// Enable CUDA acceleration for model inference
+    /// Enable CUDA acceleration for model inference (NVIDIA GPUs)
     #[arg(long, env = "INSIGHT_MODEL__ENABLE_CUDA")]
     cuda: bool,
+
+    /// Enable ROCm acceleration for model inference (AMD GPUs)
+    #[arg(long, env = "INSIGHT_MODEL__ENABLE_ROCM")]
+    rocm: bool,
+
+    /// Enable CoreML acceleration for model inference (Apple Silicon/macOS)
+    #[arg(long, env = "INSIGHT_MODEL__ENABLE_COREML")]
+    coreml: bool,
+
+    /// Enable DirectML acceleration for model inference (Windows GPU)
+    #[arg(long, env = "INSIGHT_MODEL__ENABLE_DIRECTML")]
+    directml: bool,
+
+    /// Enable OpenVINO acceleration for model inference (Intel CPUs/GPUs/VPUs)
+    #[arg(long, env = "INSIGHT_MODEL__ENABLE_OPENVINO")]
+    openvino: bool,
 
     /// Increase logging verbosity (-v for debug, -vv for trace)
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -84,6 +100,8 @@ async fn main() -> anyhow::Result<()> {
             audio: Default::default(),
             storage: Default::default(),
             server: Default::default(),
+            #[cfg(feature = "watcher")]
+            watcher: Default::default(),
         }
     });
 
@@ -121,10 +139,26 @@ async fn main() -> anyhow::Result<()> {
     if cli.cuda {
         config.model.enable_cuda = true;
     }
+    if cli.rocm {
+        config.model.enable_rocm = true;
+    }
+    if cli.coreml {
+        config.model.enable_coreml = true;
+    }
+    if cli.directml {
+        config.model.enable_directml = true;
+    }
+    if cli.openvino {
+        config.model.enable_openvino = true;
+    }
 
     info!(
         model = %config.model.name,
         cuda = config.model.enable_cuda,
+        rocm = config.model.enable_rocm,
+        coreml = config.model.enable_coreml,
+        directml = config.model.enable_directml,
+        openvino = config.model.enable_openvino,
         storage_mode = %config.storage.mode,
         storage_enabled = config.storage.enabled,
         "Configuration loaded"
@@ -184,15 +218,21 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
 
 #[cfg(all(feature = "inference", any(feature = "storage", feature = "storage-file")))]
 async fn load_model(config: &AppConfig) -> Option<insight_sidecar::inference::ClapModel> {
-    use insight_sidecar::inference::{download_model, ClapModel};
+    use insight_sidecar::inference::{download_model, ClapModel, DeviceConfig};
 
     info!(model = %config.model.name, "Downloading/loading CLAP model...");
 
     match download_model(&config.model.name, None).await {
         Ok(paths) => {
             info!(?paths, "Model files ready, loading into ONNX Runtime...");
-            let use_cuda = config.model.enable_cuda;
-            match tokio::task::spawn_blocking(move || ClapModel::load(&paths, use_cuda)).await {
+            let device_config = DeviceConfig {
+                cuda: config.model.enable_cuda,
+                rocm: config.model.enable_rocm,
+                coreml: config.model.enable_coreml,
+                directml: config.model.enable_directml,
+                openvino: config.model.enable_openvino,
+            };
+            match tokio::task::spawn_blocking(move || ClapModel::load_with_config(&paths, device_config)).await {
                 Ok(Ok(model)) => {
                     info!(device = %model.device(), "CLAP model loaded successfully");
                     Some(model)
@@ -301,7 +341,7 @@ async fn connect_storage(config: &AppConfig) -> Option<server::BoxedStorage> {
 /// Create application state with inference only (no storage features)
 #[cfg(all(feature = "inference", not(any(feature = "storage", feature = "storage-file"))))]
 async fn create_app_state(config: AppConfig) -> server::AppState {
-    use insight_sidecar::inference::{download_model, ClapModel};
+    use insight_sidecar::inference::{download_model, ClapModel, DeviceConfig};
 
     let model_id = config.model.name.clone();
     info!(model = %config.model.name, "Downloading/loading CLAP model...");
@@ -309,8 +349,14 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
     match download_model(&config.model.name, None).await {
         Ok(paths) => {
             info!(?paths, "Model files ready, loading into ONNX Runtime...");
-            let use_cuda = config.model.enable_cuda;
-            match tokio::task::spawn_blocking(move || ClapModel::load(&paths, use_cuda)).await {
+            let device_config = DeviceConfig {
+                cuda: config.model.enable_cuda,
+                rocm: config.model.enable_rocm,
+                coreml: config.model.enable_coreml,
+                directml: config.model.enable_directml,
+                openvino: config.model.enable_openvino,
+            };
+            match tokio::task::spawn_blocking(move || ClapModel::load_with_config(&paths, device_config)).await {
                 Ok(Ok(model)) => {
                     info!(device = %model.device(), "CLAP model loaded successfully");
                     server::AppState::with_model(config, model, model_id)

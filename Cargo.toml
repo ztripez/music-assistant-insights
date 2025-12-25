@@ -10,11 +10,16 @@ rust-version = "1.75"
 [features]
 default = []
 cuda = ["inference", "ort/cuda"]
+rocm = ["inference", "ort/rocm"]
+coreml = ["inference", "ort/coreml"]
+directml = ["inference", "ort/directml"]
+openvino = ["inference", "ort/openvino"]
 inference = ["dep:ort", "dep:ndarray", "dep:rubato", "dep:reqwest", "dep:sha2", "dep:tokio-util", "dep:tokenizers"]
 storage = ["dep:qdrant-client"]
 storage-file = ["dep:usearch", "dep:bincode"]
 audio = ["dep:symphonia"]
-full = ["inference", "storage", "storage-file", "audio"]
+watcher = ["dep:notify", "dep:notify-debouncer-mini", "dep:walkdir", "audio", "inference", "storage-file"]
+full = ["inference", "storage", "storage-file", "audio", "watcher"]
 integration = []
 
 [dependencies]
@@ -70,12 +75,18 @@ bincode = { version = "1", optional = true }
 # Audio processing (Phase 2 - optional)
 symphonia = { version = "0.5", features = ["all"], optional = true }
 
+# File watcher (optional)
+notify = { version = "6", optional = true }
+notify-debouncer-mini = { version = "0.4", optional = true }
+walkdir = { version = "2", optional = true }
+
 # Utilities
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 bytes = "1"
 chrono = "0.4"
 futures-util = "0.3"
 directories = "5"
+urlencoding = "2"
 
 [dev-dependencies]
 tokio-test = "0.4"

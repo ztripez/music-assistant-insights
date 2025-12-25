@@ -14,7 +14,7 @@ pub use download::{
     download_model, get_cache_dir, get_model_dir, get_model_size, is_model_downloaded,
     DownloadManager, ModelPaths,
 };
-pub use model::{ClapModel, Device};
+pub use model::{ClapModel, Device, DeviceConfig};
 pub use registry::{KnownModel, KNOWN_MODELS};
 pub use text::{format_track_metadata, TrackMetadata as TextTrackMetadata};
 

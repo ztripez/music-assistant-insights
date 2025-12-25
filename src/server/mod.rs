@@ -7,6 +7,8 @@ mod management;
 mod mood;
 mod routes;
 mod tracks;
+#[cfg(feature = "watcher")]
+mod watcher;
 
 use axum::{
     routing::{delete, get, post},
@@ -25,6 +27,9 @@ use crate::inference::{ClapModel, DownloadManager};
 #[cfg(any(feature = "storage", feature = "storage-file"))]
 use crate::storage::VectorStorage;
 
+#[cfg(feature = "watcher")]
+use crate::watcher::WatcherService;
+
 /// Type alias for boxed storage implementation
 #[cfg(any(feature = "storage", feature = "storage-file"))]
 pub type BoxedStorage = Box<dyn VectorStorage>;
@@ -41,6 +46,8 @@ pub struct AppState {
     pub current_model_id: Arc<RwLock<Option<String>>>,
     #[cfg(any(feature = "storage", feature = "storage-file"))]
     pub storage: Option<Arc<BoxedStorage>>,
+    #[cfg(feature = "watcher")]
+    pub watcher: Arc<RwLock<Option<WatcherService>>>,
     /// Server start time for uptime calculation
     pub started_at: Instant,
 }
@@ -57,6 +64,8 @@ impl AppState {
             current_model_id: Arc::new(RwLock::new(None)),
             #[cfg(any(feature = "storage", feature = "storage-file"))]
             storage: None,
+            #[cfg(feature = "watcher")]
+            watcher: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -71,6 +80,8 @@ impl AppState {
             current_model_id: Arc::new(RwLock::new(Some(model_id))),
             #[cfg(any(feature = "storage", feature = "storage-file"))]
             storage: None,
+            #[cfg(feature = "watcher")]
+            watcher: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -87,6 +98,8 @@ impl AppState {
             #[cfg(feature = "inference")]
             current_model_id: Arc::new(RwLock::new(None)),
             storage: Some(Arc::new(storage)),
+            #[cfg(feature = "watcher")]
+            watcher: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -105,6 +118,8 @@ impl AppState {
             download_manager: DownloadManager::new(),
             current_model_id: Arc::new(RwLock::new(Some(model_id))),
             storage: Some(Arc::new(storage)),
+            #[cfg(feature = "watcher")]
+            watcher: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -156,7 +171,7 @@ impl AppState {
 
 /// Creates the application router with all routes configured
 pub fn create_router(state: AppState) -> Router {
-    let api_routes = Router::new()
+    let mut api_routes = Router::new()
         .route("/health", get(routes::health))
         .route("/config", get(routes::config))
         // Management endpoints
@@ -187,6 +202,20 @@ pub fn create_router(state: AppState) -> Router {
         // Mood classification endpoints
         .route("/mood/classify", post(mood::classify_mood))
         .route("/mood/list", get(mood::list_moods));
+
+    // Watcher endpoints (when feature is enabled)
+    #[cfg(feature = "watcher")]
+    {
+        api_routes = api_routes
+            .route("/watcher/status", get(watcher::status))
+            .route("/watcher/start", post(watcher::start))
+            .route("/watcher/stop", post(watcher::stop))
+            .route("/watcher/pause", post(watcher::pause))
+            .route("/watcher/resume", post(watcher::resume))
+            .route("/watcher/scan", post(watcher::trigger_scan))
+            .route("/watcher/folders", get(watcher::list_folders).post(watcher::add_folder))
+            .route("/watcher/folders/:path", delete(watcher::remove_folder));
+    }
 
     Router::new()
         .nest("/api/v1", api_routes)

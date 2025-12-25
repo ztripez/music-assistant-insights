@@ -12,6 +12,8 @@ pub mod mood;
 pub mod server;
 pub mod storage;
 pub mod types;
+#[cfg(feature = "watcher")]
+pub mod watcher;
 
 pub use config::{AppConfig, StorageMode};
 pub use error::{AppError, Result};
