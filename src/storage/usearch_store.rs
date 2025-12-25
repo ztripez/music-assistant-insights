@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::task::spawn_blocking;
 use tracing::{debug, info, warn};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
@@ -181,46 +182,59 @@ impl UsearchStorage {
         Ok(())
     }
 
-    /// Save indices and metadata to disk
-    fn save_to_disk(&self, collection: &str) -> Result<(), StorageError> {
+    /// Save indices and metadata to disk (async to avoid blocking executor)
+    async fn save_to_disk(&self, collection: &str) -> Result<(), StorageError> {
         let (index_path, meta_path, idmap_path) = self.get_paths(collection);
 
-        let (index, metadata, id_map, next_key) = if collection == TEXT_COLLECTION {
-            (
-                self.text_index.read_or_recover(),
-                self.text_metadata.read_or_recover(),
-                self.text_id_map.read_or_recover(),
-                *self.text_next_key.read_or_recover(),
-            )
-        } else {
-            (
-                self.audio_index.read_or_recover(),
-                self.audio_metadata.read_or_recover(),
-                self.audio_id_map.read_or_recover(),
-                *self.audio_next_key.read_or_recover(),
-            )
+        // Serialize data while holding locks (fast operation)
+        let (index_path_str, meta_data, idmap_data) = {
+            let (index, metadata, id_map, next_key) = if collection == TEXT_COLLECTION {
+                (
+                    self.text_index.read_or_recover(),
+                    self.text_metadata.read_or_recover(),
+                    self.text_id_map.read_or_recover(),
+                    *self.text_next_key.read_or_recover(),
+                )
+            } else {
+                (
+                    self.audio_index.read_or_recover(),
+                    self.audio_metadata.read_or_recover(),
+                    self.audio_id_map.read_or_recover(),
+                    *self.audio_next_key.read_or_recover(),
+                )
+            };
+
+            // Save index (blocking but usearch requires it)
+            let index_path_str = index_path.to_string_lossy().into_owned();
+            index
+                .save(&index_path_str)
+                .map_err(|e| StorageError::OperationFailed(format!("Failed to save index: {}", e)))?;
+
+            // Serialize metadata and id map
+            let meta_data = bincode::serialize(&*metadata)
+                .map_err(|e| StorageError::SerializationError(e.to_string()))?;
+            let idmap_data = bincode::serialize(&(&*id_map, next_key))
+                .map_err(|e| StorageError::SerializationError(e.to_string()))?;
+
+            (index_path_str, meta_data, idmap_data)
         };
+        // Locks released here
 
-        // Save index
-        index
-            .save(index_path.to_string_lossy().as_ref())
-            .map_err(|e| StorageError::OperationFailed(format!("Failed to save index: {}", e)))?;
+        // Write files in blocking thread pool to avoid blocking async executor
+        let meta_path_clone = meta_path.clone();
+        let idmap_path_clone = idmap_path.clone();
 
-        // Save metadata
-        let meta_data = bincode::serialize(&*metadata)
-            .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-        fs::write(&meta_path, meta_data).map_err(|e| {
-            StorageError::OperationFailed(format!("Failed to write metadata: {}", e))
-        })?;
+        spawn_blocking(move || {
+            fs::write(&meta_path_clone, meta_data)
+                .map_err(|e| StorageError::OperationFailed(format!("Failed to write metadata: {}", e)))?;
+            fs::write(&idmap_path_clone, idmap_data)
+                .map_err(|e| StorageError::OperationFailed(format!("Failed to write id map: {}", e)))?;
+            Ok::<(), StorageError>(())
+        })
+        .await
+        .map_err(|e| StorageError::OperationFailed(format!("Spawn blocking failed: {}", e)))??;
 
-        // Save id map
-        let idmap_data = bincode::serialize(&(&*id_map, next_key))
-            .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-        fs::write(&idmap_path, idmap_data).map_err(|e| {
-            StorageError::OperationFailed(format!("Failed to write id map: {}", e))
-        })?;
-
-        debug!("Saved {} to disk", collection);
+        debug!(collection, index_path = %index_path_str, "Saved to disk");
         Ok(())
     }
 
@@ -374,8 +388,8 @@ impl VectorStorage for UsearchStorage {
             .write_or_recover()
             .insert(track_id.to_string(), metadata);
 
-        // Save to disk
-        self.save_to_disk(collection)?;
+        // Save to disk (async)
+        self.save_to_disk(collection).await?;
 
         debug!(track_id, collection, "Upserted embedding");
         Ok(())
@@ -454,20 +468,23 @@ impl VectorStorage for UsearchStorage {
         };
 
         if let Some(key) = key {
-            // Remove from index
-            let idx = index.write_or_recover();
-            idx.remove(key)
-                .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
-            drop(idx);
+            // Synchronous operations in their own scope to ensure guards are dropped before await
+            {
+                // Remove from index
+                let idx = index.write_or_recover();
+                idx.remove(key)
+                    .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+                // idx dropped at end of scope
 
-            // Remove from metadata
-            metadata_map.write_or_recover().remove(track_id);
+                // Remove from metadata
+                metadata_map.write_or_recover().remove(track_id);
 
-            // Remove from id map
-            id_map.write_or_recover().remove(track_id);
+                // Remove from id map
+                id_map.write_or_recover().remove(track_id);
+            }
 
-            // Save to disk
-            self.save_to_disk(collection)?;
+            // Save to disk (async) - guards are now dropped
+            self.save_to_disk(collection).await?;
         }
 
         debug!(track_id, collection, "Deleted embedding");
