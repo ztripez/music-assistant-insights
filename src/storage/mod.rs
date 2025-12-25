@@ -190,6 +190,20 @@ pub struct SearchFilter {
     pub album: Option<String>,
     /// Exclude specific track IDs
     pub exclude_ids: Option<Vec<String>>,
+
+    // Mood filters
+    /// Include tracks with any of these moods
+    pub moods: Option<Vec<String>>,
+    /// Exclude tracks with any of these moods
+    pub exclude_moods: Option<Vec<String>>,
+    /// Minimum valence (-1.0 to 1.0)
+    pub min_valence: Option<f32>,
+    /// Maximum valence (-1.0 to 1.0)
+    pub max_valence: Option<f32>,
+    /// Minimum arousal (-1.0 to 1.0)
+    pub min_arousal: Option<f32>,
+    /// Maximum arousal (-1.0 to 1.0)
+    pub max_arousal: Option<f32>,
 }
 
 impl SearchFilter {
@@ -219,6 +233,32 @@ impl SearchFilter {
     /// Exclude specific track IDs
     pub fn exclude(mut self, ids: Vec<String>) -> Self {
         self.exclude_ids = Some(ids);
+        self
+    }
+
+    /// Filter by moods (include tracks with any of these moods)
+    pub fn with_moods(mut self, moods: Vec<String>) -> Self {
+        self.moods = Some(moods);
+        self
+    }
+
+    /// Exclude tracks with any of these moods
+    pub fn exclude_moods(mut self, moods: Vec<String>) -> Self {
+        self.exclude_moods = Some(moods);
+        self
+    }
+
+    /// Filter by valence range
+    pub fn with_valence_range(mut self, min: Option<f32>, max: Option<f32>) -> Self {
+        self.min_valence = min;
+        self.max_valence = max;
+        self
+    }
+
+    /// Filter by arousal range
+    pub fn with_arousal_range(mut self, min: Option<f32>, max: Option<f32>) -> Self {
+        self.min_arousal = min;
+        self.max_arousal = max;
         self
     }
 }

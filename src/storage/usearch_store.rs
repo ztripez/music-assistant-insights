@@ -317,6 +317,51 @@ impl UsearchStorage {
                             return None;
                         }
                     }
+
+                    // Filter by moods (include)
+                    if let Some(ref moods) = f.moods {
+                        if let Some(ref track_moods) = metadata.moods {
+                            if !moods.iter().any(|m| track_moods.contains(m)) {
+                                return None;
+                            }
+                        } else {
+                            // No moods on track, filter it out
+                            return None;
+                        }
+                    }
+
+                    // Filter by moods (exclude)
+                    if let Some(ref exclude_moods) = f.exclude_moods {
+                        if let Some(ref track_moods) = metadata.moods {
+                            if exclude_moods.iter().any(|m| track_moods.contains(m)) {
+                                return None;
+                            }
+                        }
+                    }
+
+                    // Filter by valence range
+                    if let Some(min_valence) = f.min_valence {
+                        if metadata.valence.map_or(true, |v| v < min_valence) {
+                            return None;
+                        }
+                    }
+                    if let Some(max_valence) = f.max_valence {
+                        if metadata.valence.map_or(true, |v| v > max_valence) {
+                            return None;
+                        }
+                    }
+
+                    // Filter by arousal range
+                    if let Some(min_arousal) = f.min_arousal {
+                        if metadata.arousal.map_or(true, |a| a < min_arousal) {
+                            return None;
+                        }
+                    }
+                    if let Some(max_arousal) = f.max_arousal {
+                        if metadata.arousal.map_or(true, |a| a > max_arousal) {
+                            return None;
+                        }
+                    }
                 }
 
                 // Convert distance to similarity score (cosine: 1 - distance)

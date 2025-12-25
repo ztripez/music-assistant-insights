@@ -114,6 +114,23 @@ impl QdrantStorage {
             payload["file_path"] = json!(file_path);
         }
 
+        // Add mood fields if present
+        if let Some(ref primary_mood) = metadata.primary_mood {
+            payload["primary_mood"] = json!(primary_mood);
+        }
+        if let Some(ref moods) = metadata.moods {
+            payload["moods"] = json!(moods);
+        }
+        if let Some(ref mood_scores) = metadata.mood_scores {
+            payload["mood_scores"] = json!(mood_scores);
+        }
+        if let Some(valence) = metadata.valence {
+            payload["valence"] = json!(valence);
+        }
+        if let Some(arousal) = metadata.arousal {
+            payload["arousal"] = json!(arousal);
+        }
+
         Payload::try_from(payload).unwrap_or_default()
     }
 
@@ -170,6 +187,38 @@ impl QdrantStorage {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Parse mood fields
+        let primary_mood = payload
+            .get("primary_mood")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let moods = payload.get("moods").and_then(|v| v.as_list()).map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        });
+
+        let mood_scores = payload.get("mood_scores").and_then(|v| {
+            v.as_struct().map(|s| {
+                s.fields
+                    .iter()
+                    .filter_map(|(k, v)| v.as_double().map(|d| (k.clone(), d as f32)))
+                    .collect()
+            })
+        });
+
+        let valence = payload
+            .get("valence")
+            .and_then(|v| v.as_double())
+            .map(|d| d as f32);
+
+        let arousal = payload
+            .get("arousal")
+            .and_then(|v| v.as_double())
+            .map(|d| d as f32);
+
         Ok(TrackMetadata {
             track_id,
             name,
@@ -178,11 +227,18 @@ impl QdrantStorage {
             genres,
             file_path,
             updated_at,
+            primary_mood,
+            moods,
+            mood_scores,
+            valence,
+            arousal,
         })
     }
 
     /// Build a Qdrant filter from SearchFilter
     fn build_filter(filter: &SearchFilter) -> Option<Filter> {
+        use qdrant_client::qdrant::Range;
+
         let mut conditions: Vec<Condition> = Vec::new();
 
         if let Some(ref artists) = filter.artists {
@@ -201,11 +257,49 @@ impl QdrantStorage {
             conditions.push(Condition::matches("album", album.clone()));
         }
 
+        // Mood inclusion filter - match any of the specified moods
+        if let Some(ref moods) = filter.moods {
+            for mood in moods {
+                conditions.push(Condition::matches("moods", mood.clone()));
+            }
+        }
+
+        // Valence range filter
+        if filter.min_valence.is_some() || filter.max_valence.is_some() {
+            conditions.push(Condition::range(
+                "valence",
+                Range {
+                    gte: filter.min_valence.map(|v| v as f64),
+                    lte: filter.max_valence.map(|v| v as f64),
+                    ..Default::default()
+                },
+            ));
+        }
+
+        // Arousal range filter
+        if filter.min_arousal.is_some() || filter.max_arousal.is_some() {
+            conditions.push(Condition::range(
+                "arousal",
+                Range {
+                    gte: filter.min_arousal.map(|v| v as f64),
+                    lte: filter.max_arousal.map(|v| v as f64),
+                    ..Default::default()
+                },
+            ));
+        }
+
         // Handle exclusions
         let mut must_not: Vec<Condition> = Vec::new();
         if let Some(ref exclude_ids) = filter.exclude_ids {
             for id in exclude_ids {
                 must_not.push(Condition::matches("track_id", id.clone()));
+            }
+        }
+
+        // Exclude tracks with any of these moods
+        if let Some(ref exclude_moods) = filter.exclude_moods {
+            for mood in exclude_moods {
+                must_not.push(Condition::matches("moods", mood.clone()));
             }
         }
 
