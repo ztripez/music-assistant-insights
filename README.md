@@ -6,10 +6,9 @@ A lightweight, high-performance inference sidecar for Music Assistant that provi
 
 This sidecar offloads ML inference from Music Assistant, keeping the main server free of heavy ML/CUDA dependencies. It provides:
 
-- **Text embeddings** from track metadata (artist, album, genre, mood)
-- **Audio embeddings** from PCM audio frames
-- **Vector storage** for similarity search and recommendations
-- **User interaction tracking** for personalized recommendations
+- **Text embeddings** from track metadata (artist, album, genre)
+- **Audio embeddings** from PCM audio frames streamed during playback
+- **Vector storage** for similarity search
 
 ## Architecture
 
@@ -17,18 +16,17 @@ This sidecar offloads ML inference from Music Assistant, keeping the main server
 ┌─────────────────────┐         ┌─────────────────────────────┐
 │   Music Assistant   │  HTTP   │      Insight Sidecar        │
 │                     │◄───────►│                             │
-│  - Library sync     │ msgpack │  - CLAP inference (ONNX)    │
-│  - Playback events  │   +     │  - Vector storage (Qdrant)  │
-│  - Search/similar   │  WS     │  - Recommendations          │
+│  - Audio Player     │ msgpack │  - Stream API (buffer+embed)│
+│  - Metadata         │   +     │  - CLAP inference (ONNX)    │
+│  - Search/similar   │  PCM    │  - Vector storage (usearch) │
 └─────────────────────┘         └─────────────────────────────┘
 ```
 
 ## Features
 
+- **Streaming ingestion**: Stream audio frames during playback for embedding extraction
 - **Semantic search**: Find tracks by natural language queries ("upbeat electronic for working out")
-- **Similar tracks**: Find tracks similar to a given track based on audio/text embeddings
-- **Recommendations**: Personalized recommendations based on listening history
-- **Real-time processing**: Stream audio during playback for embedding extraction
+- **Similar tracks**: Find tracks similar to a given track based on audio embeddings
 
 ## Tech Stack
 
@@ -36,9 +34,9 @@ This sidecar offloads ML inference from Music Assistant, keeping the main server
 |-----------|--------|-----------|
 | Language | Rust | Single binary, no GIL, minimal resources |
 | ML Runtime | ort (ONNX Runtime) | CUDA support, 3-5x faster than Python |
-| Vector DB | Qdrant (embedded) | Rust-native, fast filtered queries |
-| HTTP Server | axum | Async, WebSocket support |
-| Serialization | msgpack (rmp-serde) | Efficient binary transport |
+| Vector DB | usearch | Lightweight, embedded vector search |
+| HTTP Server | axum | Async, high performance |
+| Serialization | rmp-serde | Efficient MessagePack transport |
 | Audio | symphonia | Pure Rust audio decoding |
 
 ## Models
@@ -56,107 +54,132 @@ Embedding dimension: 512 (float32)
 
 ### Transport
 
-- HTTP with msgpack bodies
-- WebSocket for real-time audio streaming
-- Content-Type: `application/msgpack`
+- HTTP with MessagePack bodies (Content-Type: `application/msgpack`)
+- Binary PCM data for audio frames (Content-Type: `application/octet-stream`)
 
 ### Endpoints
+
+#### Streaming Ingestion
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/stream/start` | Start ingestion session for a track |
+| `POST` | `/api/v1/stream/{session_id}/frames` | Send PCM audio frames |
+| `POST` | `/api/v1/stream/{session_id}/end` | End session and store embeddings |
+| `GET` | `/api/v1/stream/{session_id}/status` | Check session status |
+| `DELETE` | `/api/v1/stream/{session_id}` | Abort/cancel session |
 
 #### Tracks
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/tracks/upsert` | Upsert track with metadata |
-| `POST` | `/api/v1/tracks/upsert/batch` | Batch upsert for library sync |
+| `GET` | `/api/v1/tracks/{track_id}` | Get track info (with optional embeddings) |
 | `DELETE` | `/api/v1/tracks/{track_id}` | Remove track |
-| `POST` | `/api/v1/tracks/{track_id}/audio` | Add audio embedding |
+| `POST` | `/api/v1/tracks/upsert` | Upsert track with pre-computed embeddings |
+| `POST` | `/api/v1/tracks/batch-upsert` | Batch upsert multiple tracks |
 
-#### Search & Similarity
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/v1/search` | Semantic text search |
-| `POST` | `/api/v1/similar` | Find similar tracks |
-
-#### Interactions & Recommendations
+#### Embedding & Search
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/interactions` | Record play/skip/favorite |
-| `POST` | `/api/v1/recommendations` | Get personalized recommendations |
+| `POST` | `/api/v1/embed/text` | Generate text embedding from text or metadata |
+| `POST` | `/api/v1/embed/audio` | Generate audio embedding from PCM data |
+| `POST` | `/api/v1/tracks/search` | Search tracks by embedding vector |
+| `POST` | `/api/v1/tracks/embed-text` | Generate text embedding and store in one call |
+| `POST` | `/api/v1/tracks/batch-embed-text` | Batch generate and store text embeddings |
 
-#### Streaming
+#### Mood Classification
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `WS` | `/api/v1/stream/audio` | Real-time audio embedding |
+| `POST` | `/api/v1/mood/classify` | Classify mood from embedding or track ID |
+| `GET` | `/api/v1/mood/list` | List available mood categories |
+
+#### Model Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/models` | List available models |
+| `POST` | `/api/v1/models/download` | Download a model |
+| `GET` | `/api/v1/models/downloads` | List active downloads |
+| `POST` | `/api/v1/models/{model_id}/load` | Load a model |
+| `DELETE` | `/api/v1/models/{model_id}` | Delete a cached model |
 
 #### Admin
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/health` | Health check |
-| `GET` | `/api/v1/config` | Current configuration |
-| `POST` | `/api/v1/admin/reload` | Hot-reload model |
-| `DELETE` | `/api/v1/admin/reset` | Wipe all data |
+| `GET` | `/api/v1/config` | Get current configuration |
+| `GET` | `/api/v1/status` | Get system status |
+| `GET` | `/api/v1/storage/stats` | Get storage statistics |
 
 ### Data Types
 
 ```rust
-// Track metadata for upsert
+// Start stream request
+struct StartStreamRequest {
+    track_id: String,
+    metadata: TrackMetadata,
+    format: AudioFormat,      // "pcm_f32_le", "pcm_s16_le", "pcm_s24_le"
+    sample_rate: u32,         // 44100, 48000, etc.
+    channels: u8,             // 1 (mono) or 2 (stereo)
+}
+
+// Track metadata
 struct TrackMetadata {
     name: String,
     artists: Vec<String>,
     album: Option<String>,
     genres: Vec<String>,
-    mood: Option<String>,
-    isrc: Option<String>,
-    duration_ms: Option<u64>,
 }
 
-// Audio data
-struct AudioData {
-    format: AudioFormat,      // Pcm_f32le, Pcm_s16le, Pcm_s24le
-    sample_rate: u32,         // 44100, 48000, etc.
-    channels: u8,             // 1 (mono) or 2 (stereo)
-    data: Vec<u8>,            // Raw PCM bytes
+// End stream request
+struct EndStreamRequest {
+    store: bool,              // Whether to store the embeddings
+    min_duration_s: f32,      // Minimum duration to generate embedding (default: 3.0)
 }
 
-// Search/similarity blend modes
-enum BlendMode {
-    Text,      // Text embeddings only
-    Audio,     // Audio embeddings only
-    Combined,  // Both (default)
+// Search request
+struct SearchRequest {
+    embedding: Vec<f32>,      // 512-dimensional embedding vector
+    collection: String,       // "text" or "audio"
+    limit: u32,               // Max results to return
+    filter: Option<SearchFilter>,
 }
 
-// User interactions
-enum InteractionType {
-    Played,
-    Skipped,
-    Favorited,
-    Unfavorited,
+struct SearchFilter {
+    exclude_ids: Vec<String>, // Track IDs to exclude from results
 }
 ```
 
 ## Configuration
 
-Environment variables:
+Environment variables (use `INSIGHT_` prefix, double underscore for nesting):
 
 ```bash
 # Model
-INSIGHT_MODEL=Xenova/clap-htsat-unfused
-INSIGHT_ENABLE_CUDA=true
+INSIGHT_MODEL__NAME=Xenova/clap-htsat-unfused
+INSIGHT_MODEL__ENABLE_CUDA=true         # NVIDIA GPU
+INSIGHT_MODEL__ENABLE_ROCM=false        # AMD GPU
+INSIGHT_MODEL__ENABLE_COREML=false      # Apple Silicon
+INSIGHT_MODEL__ENABLE_DIRECTML=false    # Windows GPU
+INSIGHT_MODEL__ENABLE_OPENVINO=false    # Intel acceleration
 
 # Audio processing
-INSIGHT_WINDOW_SIZE_S=10.0
-INSIGHT_HOP_SIZE_S=10.0
+INSIGHT_AUDIO__WINDOW_SIZE_S=10.0       # Window size for embeddings
+INSIGHT_AUDIO__HOP_SIZE_S=10.0          # Hop between windows
 
 # Storage
-INSIGHT_STORAGE_PATH=/data/qdrant
+INSIGHT_STORAGE__MODE=file              # "file" (usearch) or "qdrant"
+INSIGHT_STORAGE__DATA_DIR=~/.local/share/insight-sidecar
+INSIGHT_STORAGE__URL=http://localhost:6334  # For Qdrant mode
+INSIGHT_STORAGE__API_KEY=               # Qdrant Cloud API key
+INSIGHT_STORAGE__ENABLED=true
 
 # Server
-INSIGHT_HOST=0.0.0.0
-INSIGHT_PORT=8096
+INSIGHT_SERVER__HOST=0.0.0.0
+INSIGHT_SERVER__PORT=8096
 ```
 
 ## Deployment
@@ -272,17 +295,14 @@ insight-sidecar/
 │   ├── server/
 │   │   ├── mod.rs
 │   │   ├── routes.rs     # HTTP routes
-│   │   └── websocket.rs  # WebSocket handler
+│   │   └── stream.rs     # Streaming session handler
 │   ├── inference/
 │   │   ├── mod.rs
 │   │   ├── clap.rs       # CLAP model wrapper
 │   │   └── audio.rs      # Audio preprocessing
-│   ├── storage/
-│   │   ├── mod.rs
-│   │   └── qdrant.rs     # Vector storage
-│   └── recommendations/
+│   └── storage/
 │       ├── mod.rs
-│       └── engine.rs     # Recommendation logic
+│       └── vector.rs     # Vector storage (usearch)
 ├── models/               # ONNX models (downloaded at build/runtime)
 ├── Cargo.toml
 ├── Dockerfile
@@ -297,4 +317,4 @@ Apache-2.0
 
 - [Music Assistant](https://github.com/music-assistant/server) - The main Music Assistant server
 - [LAION CLAP](https://github.com/LAION-AI/CLAP) - The CLAP model architecture
-- [Qdrant](https://github.com/qdrant/qdrant) - Vector database
+- [usearch](https://github.com/unum-cloud/usearch) - Vector search engine

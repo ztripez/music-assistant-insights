@@ -10,12 +10,13 @@ This is a Rust sidecar service for Music Assistant that provides ML inference fo
 
 | Component | Crate | Purpose |
 |-----------|-------|---------|
-| HTTP/WS Server | `axum` | Async web framework |
+| HTTP Server | `axum` | Async web framework |
 | Async Runtime | `tokio` | Async runtime |
 | ML Inference | `ort` | ONNX Runtime bindings |
-| Vector Storage | `qdrant-client` | Embedded vector database |
-| Serialization | `rmp-serde` | MessagePack for API |
+| Vector Storage | `usearch` / `qdrant-client` | File-based or hosted vector DB |
+| Serialization | `rmp-serde` | MessagePack for all API endpoints |
 | Audio Decoding | `symphonia` | Pure Rust audio decoding |
+| Audio Resampling | `rubato` | High-quality resampling to 48kHz |
 | Config | `config` | Environment/file config |
 | Logging | `tracing` | Structured logging |
 
@@ -102,26 +103,30 @@ src/
 ├── config.rs            # Configuration from env/files
 ├── error.rs             # Error types
 ├── server/
-│   ├── mod.rs           # Router setup
-│   ├── routes.rs        # HTTP route handlers
-│   ├── websocket.rs     # WebSocket handlers
-│   ├── extractors.rs    # Custom axum extractors (MsgPack)
-│   └── responses.rs     # Response types
+│   ├── mod.rs           # Router setup, AppState
+│   ├── routes.rs        # Route definitions & MsgPack response type
+│   ├── stream.rs        # Streaming session handler (real-time ingestion)
+│   ├── tracks.rs        # Track CRUD & search handlers
+│   ├── embed.rs         # Embedding generation handlers
+│   ├── mood.rs          # Mood classification handlers
+│   ├── models.rs        # Model management handlers
+│   ├── extractors.rs    # Custom axum extractors (MsgPackExtractor)
+│   └── watcher.rs       # Folder watcher API handlers
 ├── inference/
-│   ├── mod.rs           # Inference orchestration
-│   ├── clap.rs          # CLAP model wrapper
-│   ├── audio.rs         # Audio preprocessing (resampling, windowing)
-│   └── text.rs          # Text preprocessing
+│   ├── mod.rs           # Inference orchestration, ClapModel
+│   ├── clap.rs          # CLAP model wrapper (ONNX)
+│   ├── audio.rs         # Audio preprocessing, AudioData types
+│   └── mood.rs          # Mood classification
 ├── storage/
-│   ├── mod.rs           # Storage trait
+│   ├── mod.rs           # Storage trait, TrackMetadata
+│   ├── file.rs          # File-based storage (usearch)
 │   └── qdrant.rs        # Qdrant implementation
-├── recommendations/
-│   ├── mod.rs           # Recommendation engine
-│   └── interactions.rs  # User interaction tracking
+├── watcher/             # Optional folder watcher feature
+│   ├── mod.rs           # Watcher orchestration
+│   └── processor.rs     # File processing
 └── types/
-    ├── mod.rs           # Shared types
-    ├── track.rs         # Track metadata types
-    └── audio.rs         # Audio format types
+    ├── mod.rs           # Re-exports
+    └── api.rs           # API request/response types
 ```
 
 ## Key Implementation Notes
@@ -186,28 +191,58 @@ fn preprocess_audio(
 
 ### Vector Storage
 
-- Use Qdrant in embedded mode (no separate server)
-- Store text and audio embeddings in separate collections
-- Track IDs are strings (Music Assistant item_id format)
+Two storage backends available (configurable via `INSIGHT_STORAGE__MODE`):
+
+1. **File-based (usearch)** - Default, embedded HNSW index
+2. **Qdrant** - Hosted vector database for production
+
+Both store text and audio embeddings in separate collections:
+- `tracks_text` - Text embeddings from metadata
+- `tracks_audio` - Audio embeddings from PCM
 
 ```rust
-// Collection setup
-client.create_collection(&CreateCollection {
-    collection_name: "tracks_text".into(),
-    vectors_config: Some(VectorsConfig {
-        config: Some(vectors_config::Config::Params(VectorParams {
-            size: 512,
-            distance: Distance::Cosine.into(),
-            ..Default::default()
-        })),
-    }),
-    ..Default::default()
-}).await?;
+// Storage trait allows backend switching
+pub trait VectorStorage: Send + Sync {
+    async fn upsert(&self, collection: &str, id: &str, embedding: &[f32], metadata: TrackMetadata) -> Result<()>;
+    async fn search(&self, collection: &str, embedding: &[f32], limit: usize, filter: Option<SearchFilter>) -> Result<Vec<SearchResult>>;
+    async fn get(&self, collection: &str, id: &str) -> Result<Option<StoredTrack>>;
+    async fn delete(&self, collection: &str, id: &str) -> Result<bool>;
+}
 ```
+
+### Streaming Ingestion
+
+The streaming API allows real-time ingestion during playback:
+
+```rust
+// Session-based streaming in stream.rs
+pub struct StreamSession {
+    id: Uuid,
+    track_id: String,
+    metadata: IngestMetadata,
+    format: AudioFormat,
+    source_sample_rate: u32,
+    channels: u8,
+
+    // Buffers - audio is resampled to 48kHz mono
+    mono_buffer: Vec<f32>,           // Pre-resampling
+    resampled_buffer: Vec<f32>,      // Post-resampling
+    resampler: Option<FftFixedIn<f32>>,
+
+    // Embeddings from 10-second windows
+    window_embeddings: Vec<Vec<f32>>,
+    status: StreamSessionStatus,
+}
+```
+
+Flow:
+1. `POST /stream/start` - Creates session, returns session_id
+2. `POST /stream/{id}/frames` - Send PCM bytes, buffers & generates embeddings
+3. `POST /stream/{id}/end` - Finalizes, averages embeddings, stores to vector DB
 
 ### MessagePack API
 
-- All request/response bodies use msgpack
+- All request/response bodies use msgpack (including streaming endpoints)
 - Embeddings are sent as raw bytes (not base64)
 - Use `rmp_serde` with struct flattening disabled
 

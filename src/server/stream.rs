@@ -13,19 +13,27 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use rubato::{FftFixedIn, Resampler};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use super::extractors::MsgPackExtractor;
+use super::routes::MsgPack;
 use super::AppState;
 use crate::inference::{AudioFormat, ClapModel, EMBEDDING_DIM};
 use crate::types::api::{
     EndStreamRequest, EndStreamResponse, FramesResponse, IngestMetadata, StartStreamRequest,
     StartStreamResponse, StreamSessionStatus, StreamStatusResponse,
 };
+use serde::Serialize;
+
+/// Error response for streaming endpoints
+#[derive(Debug, Serialize)]
+struct StreamErrorResponse {
+    error: String,
+}
 
 /// Target sample rate for CLAP models
 const TARGET_SAMPLE_RATE: u32 = 48000;
@@ -548,16 +556,16 @@ pub fn spawn_session_cleanup_task(manager: SharedStreamManager) {
 /// Start a new streaming session
 pub async fn start_stream(
     State(state): State<AppState>,
-    Json(request): Json<StartStreamRequest>,
+    MsgPackExtractor(request): MsgPackExtractor<StartStreamRequest>,
 ) -> impl IntoResponse {
     // Check if model is loaded
     let model_guard = state.model.read().await;
     if model_guard.is_none() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "error": "Model not loaded"
-            })),
+            MsgPack(StreamErrorResponse {
+                error: "Model not loaded".to_string(),
+            }),
         )
             .into_response();
     }
@@ -582,7 +590,7 @@ pub async fn start_stream(
                 "Started streaming session"
             );
 
-            Json(StartStreamResponse {
+            MsgPack(StartStreamResponse {
                 session_id: session_id.to_string(),
                 window_samples: WINDOW_SAMPLES,
             })
@@ -590,16 +598,16 @@ pub async fn start_stream(
         }
         Err(StreamError::SessionExists(track_id)) => (
             StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": format!("Session already exists for track: {}", track_id)
-            })),
+            MsgPack(StreamErrorResponse {
+                error: format!("Session already exists for track: {}", track_id),
+            }),
         )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": e.to_string()
-            })),
+            MsgPack(StreamErrorResponse {
+                error: e.to_string(),
+            }),
         )
             .into_response(),
     }
@@ -616,9 +624,9 @@ pub async fn stream_frames(
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Invalid session ID"
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: "Invalid session ID".to_string(),
+                }),
             )
                 .into_response();
         }
@@ -631,9 +639,9 @@ pub async fn stream_frames(
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "error": "Model not loaded"
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: "Model not loaded".to_string(),
+                }),
             )
                 .into_response();
         }
@@ -647,25 +655,25 @@ pub async fn stream_frames(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": "Session not found"
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: "Session not found".to_string(),
+                }),
             )
                 .into_response();
         }
     };
 
     match session.process_frames(&body, &model) {
-        Ok(_new_windows) => Json(FramesResponse {
+        Ok(_new_windows) => MsgPack(FramesResponse {
             buffered_seconds: session.buffered_seconds(),
             windows_completed: session.windows_completed(),
         })
         .into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": e.to_string()
-            })),
+            MsgPack(StreamErrorResponse {
+                error: e.to_string(),
+            }),
         )
             .into_response(),
     }
@@ -675,16 +683,16 @@ pub async fn stream_frames(
 pub async fn end_stream(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-    Json(request): Json<EndStreamRequest>,
+    MsgPackExtractor(request): MsgPackExtractor<EndStreamRequest>,
 ) -> impl IntoResponse {
     let session_uuid = match Uuid::parse_str(&session_id) {
         Ok(id) => id,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Invalid session ID"
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: "Invalid session ID".to_string(),
+                }),
             )
                 .into_response();
         }
@@ -697,9 +705,9 @@ pub async fn end_stream(
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "error": "Model not loaded"
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: "Model not loaded".to_string(),
+                }),
             )
                 .into_response();
         }
@@ -713,9 +721,9 @@ pub async fn end_stream(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": "Session not found"
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: "Session not found".to_string(),
+                }),
             )
                 .into_response();
         }
@@ -732,9 +740,9 @@ pub async fn end_stream(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Failed to finalize: {}", e)
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: format!("Failed to finalize: {}", e),
+                }),
             )
                 .into_response();
         }
@@ -747,9 +755,9 @@ pub async fn end_stream(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Failed to generate text embedding: {}", e)
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: format!("Failed to generate text embedding: {}", e),
+                }),
             )
                 .into_response();
         }
@@ -810,7 +818,7 @@ pub async fn end_stream(
         "Streaming session completed"
     );
 
-    Json(EndStreamResponse {
+    MsgPack(EndStreamResponse {
         track_id,
         duration_s,
         windows_processed,
@@ -830,9 +838,9 @@ pub async fn abort_stream(
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Invalid session ID"
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: "Invalid session ID".to_string(),
+                }),
             )
                 .into_response();
         }
@@ -850,9 +858,9 @@ pub async fn abort_stream(
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "Session not found"
-            })),
+            MsgPack(StreamErrorResponse {
+                error: "Session not found".to_string(),
+            }),
         )
             .into_response(),
     }
@@ -868,9 +876,9 @@ pub async fn stream_status(
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Invalid session ID"
-                })),
+                MsgPack(StreamErrorResponse {
+                    error: "Invalid session ID".to_string(),
+                }),
             )
                 .into_response();
         }
@@ -878,7 +886,7 @@ pub async fn stream_status(
 
     let manager = state.stream_manager.read().await;
     match manager.get_session(&session_uuid) {
-        Some(session) => Json(StreamStatusResponse {
+        Some(session) => MsgPack(StreamStatusResponse {
             session_id: session.id.to_string(),
             track_id: session.track_id.clone(),
             status: session.status,
@@ -889,9 +897,9 @@ pub async fn stream_status(
         .into_response(),
         None => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "Session not found"
-            })),
+            MsgPack(StreamErrorResponse {
+                error: "Session not found".to_string(),
+            }),
         )
             .into_response(),
     }

@@ -19,3 +19,4 @@ Thumbs.db
 # Data
 /data/
 *.onnx
+CLAUDE.md

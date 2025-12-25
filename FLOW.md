@@ -44,7 +44,7 @@ When playback begins, open an ingestion session:
 
 ```http
 POST /api/v1/stream/start
-Content-Type: application/json
+Content-Type: application/msgpack
 
 {
   "track_id": "abc123",
@@ -60,7 +60,7 @@ Content-Type: application/json
 }
 ```
 
-Response:
+Response (msgpack):
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -79,7 +79,7 @@ Content-Type: application/octet-stream
 <raw PCM bytes>
 ```
 
-Response:
+Response (msgpack):
 ```json
 {
   "buffered_seconds": 4.2,
@@ -98,7 +98,7 @@ When playback ends (or user skips), finalize the session:
 
 ```http
 POST /api/v1/stream/{session_id}/end
-Content-Type: application/json
+Content-Type: application/msgpack
 
 {
   "store": true,
@@ -106,7 +106,7 @@ Content-Type: application/json
 }
 ```
 
-Response:
+Response (msgpack):
 ```json
 {
   "track_id": "abc123",
@@ -133,7 +133,7 @@ Check the status of an active session:
 GET /api/v1/stream/{session_id}/status
 ```
 
-Response:
+Response (msgpack):
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -157,14 +157,14 @@ For text-based search, first generate an embedding:
 
 ```http
 POST /api/v1/embed/text
-Content-Type: application/json
+Content-Type: application/msgpack
 
 {
   "text": "upbeat electronic dance music"
 }
 ```
 
-Response:
+Response (msgpack):
 ```json
 {
   "embedding": [0.123, -0.456, ...],  // 512-dimensional
@@ -172,11 +172,23 @@ Response:
 }
 ```
 
+You can also provide metadata instead of raw text:
+```json
+{
+  "metadata": {
+    "name": "Track Name",
+    "artists": ["Artist"],
+    "album": "Album Name",
+    "genres": ["Genre"]
+  }
+}
+```
+
 ### Step 2: Search with Embedding
 
 ```http
 POST /api/v1/tracks/search
-Content-Type: application/json
+Content-Type: application/msgpack
 
 {
   "embedding": [0.123, -0.456, ...],
@@ -185,7 +197,7 @@ Content-Type: application/json
 }
 ```
 
-Response:
+Response (msgpack):
 ```json
 {
   "results": [
@@ -208,14 +220,25 @@ Response:
 To find similar tracks, first get the track's embedding:
 
 ```http
-GET /api/v1/tracks/{track_id}?include_embeddings=true
+GET /api/v1/tracks/{track_id}?include_audio=true
+```
+
+Response (msgpack):
+```json
+{
+  "track_id": "abc123",
+  "metadata": {...},
+  "has_text": true,
+  "has_audio": true,
+  "audio_embedding": [0.789, -0.012, ...]
+}
 ```
 
 Then search using that embedding in the `audio` collection:
 
 ```http
 POST /api/v1/tracks/search
-Content-Type: application/json
+Content-Type: application/msgpack
 
 {
   "embedding": [0.789, -0.012, ...],
@@ -250,22 +273,35 @@ The sidecar accepts these PCM formats:
 
 ```python
 import httpx
+import msgpack
 
 class InsightClient:
     def __init__(self, base_url="http://localhost:8096"):
         self.base_url = base_url
         self.session_id = None
+        self.headers = {"Content-Type": "application/msgpack"}
+
+    def _pack(self, data: dict) -> bytes:
+        return msgpack.packb(data)
+
+    def _unpack(self, resp: httpx.Response) -> dict:
+        return msgpack.unpackb(resp.content)
 
     def start_stream(self, track_id: str, metadata: dict,
                      sample_rate: int = 44100, channels: int = 2):
-        resp = httpx.post(f"{self.base_url}/api/v1/stream/start", json={
-            "track_id": track_id,
-            "metadata": metadata,
-            "format": "pcm_s16_le",
-            "sample_rate": sample_rate,
-            "channels": channels
-        })
-        self.session_id = resp.json()["session_id"]
+        resp = httpx.post(
+            f"{self.base_url}/api/v1/stream/start",
+            content=self._pack({
+                "track_id": track_id,
+                "metadata": metadata,
+                "format": "pcm_s16_le",
+                "sample_rate": sample_rate,
+                "channels": channels
+            }),
+            headers=self.headers
+        )
+        data = self._unpack(resp)
+        self.session_id = data["session_id"]
         return self.session_id
 
     def send_frames(self, pcm_bytes: bytes):
@@ -274,49 +310,61 @@ class InsightClient:
             content=pcm_bytes,
             headers={"Content-Type": "application/octet-stream"}
         )
-        return resp.json()
+        return self._unpack(resp)
 
     def end_stream(self, store: bool = True):
         resp = httpx.post(
             f"{self.base_url}/api/v1/stream/{self.session_id}/end",
-            json={"store": store, "min_duration_s": 3.0}
+            content=self._pack({"store": store, "min_duration_s": 3.0}),
+            headers=self.headers
         )
         self.session_id = None
-        return resp.json()
+        return self._unpack(resp)
 
     def search_by_text(self, query: str, limit: int = 10):
         # Step 1: Generate embedding from text query
-        embed_resp = httpx.post(f"{self.base_url}/api/v1/embed/text", json={
-            "text": query
-        })
-        embedding = embed_resp.json()["embedding"]
+        embed_resp = httpx.post(
+            f"{self.base_url}/api/v1/embed/text",
+            content=self._pack({"text": query}),
+            headers=self.headers
+        )
+        embedding = self._unpack(embed_resp)["embedding"]
 
         # Step 2: Search with embedding
-        search_resp = httpx.post(f"{self.base_url}/api/v1/tracks/search", json={
-            "embedding": embedding,
-            "collection": "text",
-            "limit": limit
-        })
-        return search_resp.json()["results"]
+        search_resp = httpx.post(
+            f"{self.base_url}/api/v1/tracks/search",
+            content=self._pack({
+                "embedding": embedding,
+                "collection": "text",
+                "limit": limit
+            }),
+            headers=self.headers
+        )
+        return self._unpack(search_resp)["results"]
 
     def search_similar(self, track_id: str, limit: int = 10):
         # Step 1: Get track's audio embedding
         track_resp = httpx.get(
             f"{self.base_url}/api/v1/tracks/{track_id}",
-            params={"include_embeddings": "true"}
+            params={"include_audio": "true"}
         )
-        audio_embedding = track_resp.json().get("audio_embedding")
+        data = self._unpack(track_resp)
+        audio_embedding = data.get("audio_embedding")
         if not audio_embedding:
             return []
 
         # Step 2: Search with embedding
-        search_resp = httpx.post(f"{self.base_url}/api/v1/tracks/search", json={
-            "embedding": audio_embedding,
-            "collection": "audio",
-            "limit": limit,
-            "filter": {"exclude_ids": [track_id]}
-        })
-        return search_resp.json()["results"]
+        search_resp = httpx.post(
+            f"{self.base_url}/api/v1/tracks/search",
+            content=self._pack({
+                "embedding": audio_embedding,
+                "collection": "audio",
+                "limit": limit,
+                "filter": {"exclude_ids": [track_id]}
+            }),
+            headers=self.headers
+        )
+        return self._unpack(search_resp)["results"]
 
 # Usage in MA provider
 client = InsightClient()
