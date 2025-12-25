@@ -4,21 +4,21 @@ on:
   push:
     branches: [main, dev]
     paths:
-      - "sidecar/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [main, dev]
     paths:
-      - "sidecar/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/ci.yml"
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-
-defaults:
-  run:
-    working-directory: sidecar
 
 jobs:
   lint:
@@ -38,8 +38,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sidecar/target
-          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('sidecar/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-lint-
 
@@ -64,8 +64,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sidecar/target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('sidecar/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-
 
@@ -96,8 +96,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sidecar/target
-          key: ${{ runner.os }}-cargo-build-${{ matrix.features }}-${{ hashFiles('sidecar/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-build-${{ matrix.features }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-build-${{ matrix.features }}-
 

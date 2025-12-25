@@ -16,10 +16,6 @@ env:
   RUST_BACKTRACE: 1
   BINARY_NAME: insight-sidecar
 
-defaults:
-  run:
-    working-directory: sidecar
-
 jobs:
   build:
     name: Build ${{ matrix.name }}
@@ -154,8 +150,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sidecar/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('sidecar/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-release-
 
@@ -198,7 +194,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: sidecar/${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_NAME }}
           if-no-files-found: error
 
   release:

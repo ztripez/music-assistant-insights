@@ -68,8 +68,8 @@ jobs:
       - name: Build and push CPU image
         uses: docker/build-push-action@v6
         with:
-          context: ./sidecar
-          file: ./sidecar/docker/Dockerfile
+          context: .
+          file: ./docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'push' || github.event.inputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -122,8 +122,8 @@ jobs:
       - name: Build and push CUDA image
         uses: docker/build-push-action@v6
         with:
-          context: ./sidecar
-          file: ./sidecar/docker/Dockerfile.cuda
+          context: .
+          file: ./docker/Dockerfile.cuda
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' || github.event.inputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -173,8 +173,8 @@ jobs:
       - name: Build and push ROCm image
         uses: docker/build-push-action@v6
         with:
-          context: ./sidecar
-          file: ./sidecar/docker/Dockerfile.rocm
+          context: .
+          file: ./docker/Dockerfile.rocm
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' || github.event.inputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -224,8 +224,8 @@ jobs:
       - name: Build and push OpenVINO image
         uses: docker/build-push-action@v6
         with:
-          context: ./sidecar
-          file: ./sidecar/docker/Dockerfile.openvino
+          context: .
+          file: ./docker/Dockerfile.openvino
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' || github.event.inputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
