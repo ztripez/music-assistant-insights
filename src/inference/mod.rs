@@ -6,11 +6,16 @@
 mod audio;
 mod download;
 mod model;
+pub mod registry;
 mod text;
 
 pub use audio::{AudioData, AudioFormat, AudioProcessor};
-pub use download::{download_model, ModelPaths};
-pub use model::{ClapModel, Device};
+pub use download::{
+    download_model, get_cache_dir, get_model_dir, get_model_size, is_model_downloaded,
+    DownloadManager, ModelPaths,
+};
+pub use model::{ClapModel, Device, DeviceConfig};
+pub use registry::{KnownModel, KNOWN_MODELS};
 pub use text::{format_track_metadata, TrackMetadata as TextTrackMetadata};
 
 use crate::error::AppError;
@@ -136,6 +141,9 @@ pub enum InferenceError {
     #[error("Model download failed: {0}")]
     DownloadFailed(String),
 
+    #[error("Invalid model ID: {0}")]
+    InvalidModelId(String),
+
     #[error("Invalid audio format: {0}")]
     InvalidAudioFormat(String),
 
@@ -153,6 +161,7 @@ impl From<InferenceError> for AppError {
     fn from(err: InferenceError) -> Self {
         match err {
             InferenceError::InvalidAudioFormat(msg) => AppError::BadRequest(msg),
+            InferenceError::InvalidModelId(msg) => AppError::BadRequest(msg),
             _ => AppError::Internal(err.to_string()),
         }
     }

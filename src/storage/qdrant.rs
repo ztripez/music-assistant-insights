@@ -100,15 +100,38 @@ impl QdrantStorage {
 
     /// Convert TrackMetadata to Qdrant Payload
     fn metadata_to_payload(metadata: &TrackMetadata) -> Payload {
-        Payload::try_from(json!({
+        let mut payload = json!({
             "track_id": metadata.track_id,
             "name": metadata.name,
             "artists": metadata.artists,
             "album": metadata.album,
             "genres": metadata.genres,
             "updated_at": metadata.updated_at,
-        }))
-        .unwrap_or_default()
+        });
+
+        // Add file_path if present
+        if let Some(ref file_path) = metadata.file_path {
+            payload["file_path"] = json!(file_path);
+        }
+
+        // Add mood fields if present
+        if let Some(ref primary_mood) = metadata.primary_mood {
+            payload["primary_mood"] = json!(primary_mood);
+        }
+        if let Some(ref moods) = metadata.moods {
+            payload["moods"] = json!(moods);
+        }
+        if let Some(ref mood_scores) = metadata.mood_scores {
+            payload["mood_scores"] = json!(mood_scores);
+        }
+        if let Some(valence) = metadata.valence {
+            payload["valence"] = json!(valence);
+        }
+        if let Some(arousal) = metadata.arousal {
+            payload["arousal"] = json!(arousal);
+        }
+
+        Payload::try_from(payload).unwrap_or_default()
     }
 
     /// Convert Qdrant payload to TrackMetadata
@@ -159,18 +182,63 @@ impl QdrantStorage {
             .and_then(|v| v.as_integer())
             .unwrap_or(0);
 
+        let file_path = payload
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Parse mood fields
+        let primary_mood = payload
+            .get("primary_mood")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let moods = payload.get("moods").and_then(|v| v.as_list()).map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        });
+
+        let mood_scores = payload.get("mood_scores").and_then(|v| {
+            v.as_struct().map(|s| {
+                s.fields
+                    .iter()
+                    .filter_map(|(k, v)| v.as_double().map(|d| (k.clone(), d as f32)))
+                    .collect()
+            })
+        });
+
+        let valence = payload
+            .get("valence")
+            .and_then(|v| v.as_double())
+            .map(|d| d as f32);
+
+        let arousal = payload
+            .get("arousal")
+            .and_then(|v| v.as_double())
+            .map(|d| d as f32);
+
         Ok(TrackMetadata {
             track_id,
             name,
             artists,
             album,
             genres,
+            file_path,
             updated_at,
+            primary_mood,
+            moods,
+            mood_scores,
+            valence,
+            arousal,
         })
     }
 
     /// Build a Qdrant filter from SearchFilter
     fn build_filter(filter: &SearchFilter) -> Option<Filter> {
+        use qdrant_client::qdrant::Range;
+
         let mut conditions: Vec<Condition> = Vec::new();
 
         if let Some(ref artists) = filter.artists {
@@ -189,6 +257,37 @@ impl QdrantStorage {
             conditions.push(Condition::matches("album", album.clone()));
         }
 
+        // Mood inclusion filter - match any of the specified moods
+        if let Some(ref moods) = filter.moods {
+            for mood in moods {
+                conditions.push(Condition::matches("moods", mood.clone()));
+            }
+        }
+
+        // Valence range filter
+        if filter.min_valence.is_some() || filter.max_valence.is_some() {
+            conditions.push(Condition::range(
+                "valence",
+                Range {
+                    gte: filter.min_valence.map(|v| v as f64),
+                    lte: filter.max_valence.map(|v| v as f64),
+                    ..Default::default()
+                },
+            ));
+        }
+
+        // Arousal range filter
+        if filter.min_arousal.is_some() || filter.max_arousal.is_some() {
+            conditions.push(Condition::range(
+                "arousal",
+                Range {
+                    gte: filter.min_arousal.map(|v| v as f64),
+                    lte: filter.max_arousal.map(|v| v as f64),
+                    ..Default::default()
+                },
+            ));
+        }
+
         // Handle exclusions
         let mut must_not: Vec<Condition> = Vec::new();
         if let Some(ref exclude_ids) = filter.exclude_ids {
@@ -197,15 +296,24 @@ impl QdrantStorage {
             }
         }
 
+        // Exclude tracks with any of these moods
+        if let Some(ref exclude_moods) = filter.exclude_moods {
+            for mood in exclude_moods {
+                must_not.push(Condition::matches("moods", mood.clone()));
+            }
+        }
+
         if conditions.is_empty() && must_not.is_empty() {
             None
         } else if must_not.is_empty() {
-            Some(Filter::should(conditions))
+            // Use must (AND) - all conditions must match
+            Some(Filter::must(conditions))
         } else if conditions.is_empty() {
             Some(Filter::must_not(must_not))
         } else {
+            // Both positive conditions (AND) and exclusions
             Some(Filter {
-                should: conditions,
+                must: conditions,
                 must_not,
                 ..Default::default()
             })

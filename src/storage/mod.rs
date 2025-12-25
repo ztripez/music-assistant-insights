@@ -1,13 +1,19 @@
 //! Vector storage module for track embeddings.
 //!
 //! This module provides a storage abstraction for vector embeddings,
-//! with an implementation using Qdrant as the vector database.
+//! with implementations for:
+//! - Qdrant (hosted/docker vector database)
+//! - usearch (embedded file-based storage)
 
 #[cfg(feature = "storage")]
 mod qdrant;
+#[cfg(feature = "storage-file")]
+mod usearch_store;
 
 #[cfg(feature = "storage")]
 pub use qdrant::QdrantStorage;
+#[cfg(feature = "storage-file")]
+pub use usearch_store::UsearchStorage;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -32,6 +38,9 @@ pub enum StorageError {
 
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    #[error("Lock poisoned: {0}")]
+    LockPoisoned(String),
 }
 
 /// Expected embedding dimension for CLAP models
@@ -44,7 +53,7 @@ pub const AUDIO_COLLECTION: &str = "tracks_audio";
 /// Metadata stored with each embedding
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackMetadata {
-    /// Music Assistant item_id
+    /// Music Assistant item_id (relative path for local files)
     pub track_id: String,
     /// Track name
     pub name: String,
@@ -54,8 +63,28 @@ pub struct TrackMetadata {
     pub album: Option<String>,
     /// Genre tags
     pub genres: Vec<String>,
+    /// Absolute file path (for scanner-ingested tracks)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
     /// Unix timestamp of last update
     pub updated_at: i64,
+
+    // Mood classification fields (optional, populated by mood classification)
+    /// Primary mood (top tier-1 mood)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_mood: Option<String>,
+    /// All detected moods
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moods: Option<Vec<String>>,
+    /// Mood confidence scores (mood_id -> confidence 0.0-1.0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mood_scores: Option<std::collections::HashMap<String, f32>>,
+    /// Valence (-1.0 negative to 1.0 positive)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valence: Option<f32>,
+    /// Arousal (-1.0 calm to 1.0 energetic)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arousal: Option<f32>,
 }
 
 impl TrackMetadata {
@@ -67,10 +96,16 @@ impl TrackMetadata {
             artists: Vec::new(),
             album: None,
             genres: Vec::new(),
+            file_path: None,
             updated_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0),
+            primary_mood: None,
+            moods: None,
+            mood_scores: None,
+            valence: None,
+            arousal: None,
         }
     }
 
@@ -89,6 +124,37 @@ impl TrackMetadata {
     /// Builder method to add genres
     pub fn with_genres(mut self, genres: Vec<String>) -> Self {
         self.genres = genres;
+        self
+    }
+
+    /// Builder method to add file path
+    pub fn with_file_path(mut self, path: impl Into<String>) -> Self {
+        self.file_path = Some(path.into());
+        self
+    }
+
+    /// Builder method to set primary mood
+    pub fn with_primary_mood(mut self, mood: impl Into<String>) -> Self {
+        self.primary_mood = Some(mood.into());
+        self
+    }
+
+    /// Builder method to set detected moods
+    pub fn with_moods(mut self, moods: Vec<String>) -> Self {
+        self.moods = Some(moods);
+        self
+    }
+
+    /// Builder method to set mood scores
+    pub fn with_mood_scores(mut self, scores: std::collections::HashMap<String, f32>) -> Self {
+        self.mood_scores = Some(scores);
+        self
+    }
+
+    /// Builder method to set valence-arousal coordinates
+    pub fn with_valence_arousal(mut self, valence: f32, arousal: f32) -> Self {
+        self.valence = Some(valence);
+        self.arousal = Some(arousal);
         self
     }
 }
@@ -124,6 +190,20 @@ pub struct SearchFilter {
     pub album: Option<String>,
     /// Exclude specific track IDs
     pub exclude_ids: Option<Vec<String>>,
+
+    // Mood filters
+    /// Include tracks with any of these moods
+    pub moods: Option<Vec<String>>,
+    /// Exclude tracks with any of these moods
+    pub exclude_moods: Option<Vec<String>>,
+    /// Minimum valence (-1.0 to 1.0)
+    pub min_valence: Option<f32>,
+    /// Maximum valence (-1.0 to 1.0)
+    pub max_valence: Option<f32>,
+    /// Minimum arousal (-1.0 to 1.0)
+    pub min_arousal: Option<f32>,
+    /// Maximum arousal (-1.0 to 1.0)
+    pub max_arousal: Option<f32>,
 }
 
 impl SearchFilter {
@@ -153,6 +233,32 @@ impl SearchFilter {
     /// Exclude specific track IDs
     pub fn exclude(mut self, ids: Vec<String>) -> Self {
         self.exclude_ids = Some(ids);
+        self
+    }
+
+    /// Filter by moods (include tracks with any of these moods)
+    pub fn with_moods(mut self, moods: Vec<String>) -> Self {
+        self.moods = Some(moods);
+        self
+    }
+
+    /// Exclude tracks with any of these moods
+    pub fn exclude_moods(mut self, moods: Vec<String>) -> Self {
+        self.exclude_moods = Some(moods);
+        self
+    }
+
+    /// Filter by valence range
+    pub fn with_valence_range(mut self, min: Option<f32>, max: Option<f32>) -> Self {
+        self.min_valence = min;
+        self.max_valence = max;
+        self
+    }
+
+    /// Filter by arousal range
+    pub fn with_arousal_range(mut self, min: Option<f32>, max: Option<f32>) -> Self {
+        self.min_arousal = min;
+        self.max_arousal = max;
         self
     }
 }

@@ -38,14 +38,15 @@ impl<T: serde::Serialize> IntoResponse for MsgPack<T> {
 /// Health check endpoint
 ///
 /// GET /api/v1/health
-pub async fn health(State(_state): State<AppState>) -> MsgPack<HealthResponse> {
+#[allow(unused_variables)]
+pub async fn health(State(state): State<AppState>) -> MsgPack<HealthResponse> {
     #[cfg(feature = "inference")]
-    let model_loaded = _state.model.is_some();
+    let model_loaded = state.has_model().await;
     #[cfg(not(feature = "inference"))]
     let model_loaded = false;
 
     #[cfg(feature = "storage")]
-    let storage_ready = _state.storage.is_some();
+    let storage_ready = state.storage.is_some();
     #[cfg(not(feature = "storage"))]
     let storage_ready = false;
 
@@ -74,10 +75,13 @@ pub async fn config(State(state): State<AppState>) -> MsgPack<ConfigResponse> {
     let config = &state.config;
 
     #[cfg(feature = "inference")]
-    let (loaded, device) = if let Some(ref model) = state.model {
-        (true, Some(model.device().to_string()))
-    } else {
-        (false, None)
+    let (loaded, device) = {
+        let model_guard = state.model.read().await;
+        if let Some(ref model) = *model_guard {
+            (true, Some(model.device().to_string()))
+        } else {
+            (false, None)
+        }
     };
     #[cfg(not(feature = "inference"))]
     let (loaded, device) = (false, None);
@@ -106,6 +110,7 @@ pub async fn config(State(state): State<AppState>) -> MsgPack<ConfigResponse> {
             url: config.storage.url.clone(),
             enabled: config.storage.enabled,
             connected: storage_connected,
+            mode: config.storage.mode.to_string(),
         },
     })
 }

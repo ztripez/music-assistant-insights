@@ -18,6 +18,10 @@ const MAX_SEQ_LENGTH: usize = 77;
 pub enum Device {
     Cpu,
     Cuda,
+    Rocm,
+    CoreML,
+    DirectML,
+    OpenVINO,
 }
 
 impl std::fmt::Display for Device {
@@ -25,7 +29,56 @@ impl std::fmt::Display for Device {
         match self {
             Self::Cpu => write!(f, "CPU"),
             Self::Cuda => write!(f, "CUDA"),
+            Self::Rocm => write!(f, "ROCm"),
+            Self::CoreML => write!(f, "CoreML"),
+            Self::DirectML => write!(f, "DirectML"),
+            Self::OpenVINO => write!(f, "OpenVINO"),
         }
+    }
+}
+
+/// Configuration for device/accelerator selection
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeviceConfig {
+    pub cuda: bool,
+    pub rocm: bool,
+    pub coreml: bool,
+    pub directml: bool,
+    pub openvino: bool,
+}
+
+impl DeviceConfig {
+    /// Create config with CUDA enabled (backwards compatibility)
+    pub fn with_cuda(use_cuda: bool) -> Self {
+        Self {
+            cuda: use_cuda,
+            ..Default::default()
+        }
+    }
+
+    /// Determine which device will be used based on config and available features
+    pub fn selected_device(&self) -> Device {
+        if self.cuda {
+            #[cfg(feature = "cuda")]
+            return Device::Cuda;
+        }
+        if self.rocm {
+            #[cfg(feature = "rocm")]
+            return Device::Rocm;
+        }
+        if self.coreml {
+            #[cfg(feature = "coreml")]
+            return Device::CoreML;
+        }
+        if self.directml {
+            #[cfg(feature = "directml")]
+            return Device::DirectML;
+        }
+        if self.openvino {
+            #[cfg(feature = "openvino")]
+            return Device::OpenVINO;
+        }
+        Device::Cpu
     }
 }
 
@@ -51,12 +104,17 @@ impl std::fmt::Debug for ClapModel {
 impl ClapModel {
     /// Load CLAP model from downloaded paths
     pub fn load(paths: &ModelPaths, use_cuda: bool) -> Result<Self, InferenceError> {
-        let device = if use_cuda { Device::Cuda } else { Device::Cpu };
+        Self::load_with_config(paths, DeviceConfig::with_cuda(use_cuda))
+    }
+
+    /// Load CLAP model with full device configuration
+    pub fn load_with_config(paths: &ModelPaths, device_config: DeviceConfig) -> Result<Self, InferenceError> {
+        let device = device_config.selected_device();
 
         info!(?device, "Loading CLAP model");
 
-        let text_session = Self::create_session(&paths.text_model, use_cuda)?;
-        let audio_session = Self::create_session(&paths.audio_model, use_cuda)?;
+        let text_session = Self::create_session(&paths.text_model, &device_config)?;
+        let audio_session = Self::create_session(&paths.audio_model, &device_config)?;
 
         // Log model info
         debug!(
@@ -98,7 +156,7 @@ impl ClapModel {
         })
     }
 
-    fn create_session(model_path: &Path, use_cuda: bool) -> Result<Session, InferenceError> {
+    fn create_session(model_path: &Path, device_config: &DeviceConfig) -> Result<Session, InferenceError> {
         // Read model bytes from file
         let model_bytes = std::fs::read(model_path)
             .map_err(|e| InferenceError::Onnx(format!("Failed to read model file: {e}")))?;
@@ -114,7 +172,9 @@ impl ClapModel {
             .with_intra_threads(4)
             .map_err(|e| InferenceError::Onnx(e.to_string()))?;
 
-        if use_cuda {
+        // Configure execution provider based on device config
+        // Priority: CUDA > ROCm > CoreML > DirectML > OpenVINO > CPU
+        if device_config.cuda {
             #[cfg(feature = "cuda")]
             {
                 use ort::execution_providers::CUDAExecutionProvider;
@@ -124,7 +184,55 @@ impl ClapModel {
             }
             #[cfg(not(feature = "cuda"))]
             {
-                tracing::warn!("CUDA requested but not compiled with cuda feature, using CPU");
+                warn!("CUDA requested but not compiled with cuda feature, using CPU");
+            }
+        } else if device_config.rocm {
+            #[cfg(feature = "rocm")]
+            {
+                use ort::execution_providers::ROCmExecutionProvider;
+                builder = builder
+                    .with_execution_providers([ROCmExecutionProvider::default().build()])
+                    .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+            }
+            #[cfg(not(feature = "rocm"))]
+            {
+                warn!("ROCm requested but not compiled with rocm feature, using CPU");
+            }
+        } else if device_config.coreml {
+            #[cfg(feature = "coreml")]
+            {
+                use ort::execution_providers::CoreMLExecutionProvider;
+                builder = builder
+                    .with_execution_providers([CoreMLExecutionProvider::default().build()])
+                    .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+            }
+            #[cfg(not(feature = "coreml"))]
+            {
+                warn!("CoreML requested but not compiled with coreml feature, using CPU");
+            }
+        } else if device_config.directml {
+            #[cfg(feature = "directml")]
+            {
+                use ort::execution_providers::DirectMLExecutionProvider;
+                builder = builder
+                    .with_execution_providers([DirectMLExecutionProvider::default().build()])
+                    .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+            }
+            #[cfg(not(feature = "directml"))]
+            {
+                warn!("DirectML requested but not compiled with directml feature, using CPU");
+            }
+        } else if device_config.openvino {
+            #[cfg(feature = "openvino")]
+            {
+                use ort::execution_providers::OpenVINOExecutionProvider;
+                builder = builder
+                    .with_execution_providers([OpenVINOExecutionProvider::default().build()])
+                    .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+            }
+            #[cfg(not(feature = "openvino"))]
+            {
+                warn!("OpenVINO requested but not compiled with openvino feature, using CPU");
             }
         }
 

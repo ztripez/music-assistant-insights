@@ -10,10 +10,16 @@ rust-version = "1.75"
 [features]
 default = []
 cuda = ["inference", "ort/cuda"]
-inference = ["dep:ort", "dep:ndarray", "dep:rubato", "dep:reqwest", "dep:sha2", "dep:directories", "dep:tokio-util", "dep:tokenizers"]
+rocm = ["inference", "ort/rocm"]
+coreml = ["inference", "ort/coreml"]
+directml = ["inference", "ort/directml"]
+openvino = ["inference", "ort/openvino"]
+inference = ["dep:ort", "dep:ndarray", "dep:rubato", "dep:reqwest", "dep:sha2", "dep:tokio-util", "dep:tokenizers"]
 storage = ["dep:qdrant-client"]
+storage-file = ["dep:usearch", "dep:bincode"]
 audio = ["dep:symphonia"]
-full = ["inference", "storage", "audio"]
+watcher = ["dep:notify", "dep:notify-debouncer-mini", "dep:walkdir", "audio", "inference", "storage-file"]
+full = ["inference", "storage", "storage-file", "audio", "watcher"]
 integration = []
 
 [dependencies]
@@ -33,6 +39,7 @@ rmp-serde = "1"
 
 # Configuration
 config = "0.14"
+toml = "0.8"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -54,19 +61,32 @@ ndarray = { version = "0.16", optional = true }
 rubato = { version = "0.15", optional = true }
 reqwest = { version = "0.12", features = ["stream"], optional = true }
 sha2 = { version = "0.10", optional = true }
-directories = { version = "5", optional = true }
+# directories moved to non-optional below
 tokio-util = { version = "0.7", features = ["io"], optional = true }
 tokenizers = { version = "0.21", optional = true }
 
-# Vector storage (Phase 3 - optional)
+# Vector storage - Qdrant (hosted)
 qdrant-client = { version = "1", optional = true }
+
+# Vector storage - usearch (embedded/file-based)
+usearch = { version = "2", optional = true }
+bincode = { version = "1", optional = true }
 
 # Audio processing (Phase 2 - optional)
 symphonia = { version = "0.5", features = ["all"], optional = true }
 
+# File watcher (optional)
+notify = { version = "6", optional = true }
+notify-debouncer-mini = { version = "0.4", optional = true }
+walkdir = { version = "2", optional = true }
+
 # Utilities
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 bytes = "1"
+chrono = "0.4"
+futures-util = "0.3"
+directories = "5"
+urlencoding = "2"
 
 [dev-dependencies]
 tokio-test = "0.4"
