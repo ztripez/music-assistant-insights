@@ -226,10 +226,10 @@ pub fn create_router(state: AppState) -> Router {
     {
         api_routes = api_routes
             .route("/stream/start", post(stream::start_stream))
-            .route("/stream/{session_id}/frames", post(stream::stream_frames))
-            .route("/stream/{session_id}/end", post(stream::end_stream))
-            .route("/stream/{session_id}", delete(stream::abort_stream))
-            .route("/stream/{session_id}/status", get(stream::stream_status));
+            .route("/stream/:session_id/frames", post(stream::stream_frames))
+            .route("/stream/:session_id/end", post(stream::end_stream))
+            .route("/stream/:session_id", delete(stream::abort_stream))
+            .route("/stream/:session_id/status", get(stream::stream_status));
     }
 
     // Watcher endpoints (when feature is enabled)

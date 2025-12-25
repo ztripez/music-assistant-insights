@@ -345,13 +345,40 @@ impl ClapModel {
         // Get output name before running (to avoid borrow conflicts)
         let output_name = session.outputs[0].name.clone();
 
-        // Run inference
-        let outputs = session
-            .run(ort::inputs![
-                "input_ids" => input_ids,
-                "attention_mask" => attention_mask
-            ])
-            .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+        // Get actual input names from the model
+        let input_names: Vec<String> = session.inputs.iter().map(|i| i.name.clone()).collect();
+        debug!(?input_names, "Text model input names");
+
+        // Build inputs based on what the model actually expects
+        // Some CLAP models only need input_ids, others also need attention_mask
+        let outputs = if input_names.len() == 1 {
+            // Model only expects input_ids (e.g., some CLAP text encoders)
+            session
+                .run(ort::inputs![
+                    input_names[0].as_str() => input_ids
+                ])
+                .map_err(|e| InferenceError::Onnx(e.to_string()))?
+        } else if input_names.iter().any(|n| n.contains("attention")) {
+            // Model expects both input_ids and attention_mask
+            let id_input = input_names.iter().find(|n| n.contains("input_id") || n == &"input_ids").cloned()
+                .unwrap_or_else(|| input_names[0].clone());
+            let mask_input = input_names.iter().find(|n| n.contains("attention")).cloned()
+                .unwrap_or_else(|| input_names[1].clone());
+
+            session
+                .run(ort::inputs![
+                    id_input.as_str() => input_ids,
+                    mask_input.as_str() => attention_mask
+                ])
+                .map_err(|e| InferenceError::Onnx(e.to_string()))?
+        } else {
+            // Fallback: try just input_ids with first input name
+            session
+                .run(ort::inputs![
+                    input_names[0].as_str() => input_ids
+                ])
+                .map_err(|e| InferenceError::Onnx(e.to_string()))?
+        };
 
         // Get first output (embedding)
         let output = outputs
@@ -433,12 +460,13 @@ impl ClapModel {
             .lock()
             .map_err(|e| InferenceError::Onnx(format!("Session lock error: {e}")))?;
 
-        // Get output name before running (to avoid borrow conflicts)
+        // Get input and output names from the model
+        let input_name = session.inputs[0].name.clone();
         let output_name = session.outputs[0].name.clone();
 
         let outputs = session
             .run(ort::inputs![
-                "input_values" => input
+                input_name.as_str() => input
             ])
             .map_err(|e| InferenceError::Onnx(e.to_string()))?;
 
