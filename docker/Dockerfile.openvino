@@ -1,0 +1,77 @@
+# Dockerfile for insight-sidecar with Intel OpenVINO support
+# Single arch: linux/amd64 only
+
+ARG RUST_VERSION=1.83
+ARG OPENVINO_VERSION=2024.5.0
+
+# =============================================================================
+# Builder stage
+# =============================================================================
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+ARG FEATURES=openvino,storage,storage-file,audio,watcher
+
+WORKDIR /build
+
+# Copy manifests first for better caching
+COPY Cargo.toml Cargo.lock ./
+
+# Create dummy source to cache dependencies
+RUN mkdir -p src && \
+    echo 'fn main() { println!("dummy"); }' > src/main.rs
+
+# Pre-build dependencies
+RUN cargo build --release --features "$FEATURES" || true
+
+# Copy actual source code
+COPY src ./src
+
+# Build the actual binary
+RUN cargo build --release --features "$FEATURES" && \
+    strip /build/target/release/insight-sidecar
+
+# =============================================================================
+# Runtime stage
+# =============================================================================
+FROM openvino/ubuntu24_runtime:${OPENVINO_VERSION}
+
+USER root
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r sidecar && useradd -r -g sidecar sidecar
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/insight-sidecar /usr/local/bin/insight-sidecar
+
+# Create data directory
+RUN mkdir -p /data && chown -R sidecar:sidecar /data
+
+# Switch to non-root user
+USER sidecar
+
+# Set default environment variables
+ENV INSIGHT_SERVER__HOST=0.0.0.0
+ENV INSIGHT_SERVER__PORT=8096
+ENV INSIGHT_STORAGE__MODE=file
+ENV INSIGHT_STORAGE__DATA_DIR=/data
+ENV INSIGHT_MODEL__ENABLE_OPENVINO=true
+
+# Expose the default port
+EXPOSE 8096
+
+# Set volume for persistent data
+VOLUME ["/data"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8096/health || exit 1
+
+# Run the sidecar
+ENTRYPOINT ["insight-sidecar"]
