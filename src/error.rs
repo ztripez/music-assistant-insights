@@ -69,7 +69,7 @@ impl IntoResponse for AppError {
         };
 
         // Try to serialize as msgpack, fall back to JSON
-        if let Ok(bytes) = rmp_serde::to_vec(&body) {
+        if let Ok(bytes) = rmp_serde::to_vec_named(&body) {
             (status, [("content-type", "application/msgpack")], bytes).into_response()
         } else {
             // Fallback to JSON if msgpack fails

@@ -16,7 +16,7 @@ use axum::{
 };
 use rubato::{FftFixedIn, Resampler};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::extractors::MsgPackExtractor;
@@ -284,10 +284,12 @@ impl StreamSession {
             let embedding = self.generate_window_embedding(&window, model)?;
             self.window_embeddings.push(embedding);
 
-            debug!(
+            info!(
                 session_id = %self.id,
-                windows = self.window_embeddings.len(),
-                "Completed embedding window"
+                track_id = %self.track_id,
+                window = self.window_embeddings.len(),
+                total_duration_s = format!("{:.1}", self.window_embeddings.len() as f32 * 10.0),
+                "Window embedded"
             );
         }
 
@@ -817,6 +819,11 @@ pub async fn end_stream(
                     warn!(error = %e, "Failed to store audio embedding");
                 } else {
                     audio_stored = true;
+                    info!(
+                        track_id = %track_id,
+                        collection = AUDIO_COLLECTION,
+                        "Audio embedding saved"
+                    );
                 }
             }
 
@@ -828,6 +835,11 @@ pub async fn end_stream(
                 warn!(error = %e, "Failed to store text embedding");
             } else {
                 text_stored = true;
+                info!(
+                    track_id = %track_id,
+                    collection = TEXT_COLLECTION,
+                    "Text embedding saved"
+                );
             }
         }
     }

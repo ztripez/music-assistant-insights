@@ -8,7 +8,7 @@ repository = "https://github.com/ztripez/music-assistant-insights"
 rust-version = "1.75"
 
 [features]
-default = []
+default = ["full"]
 cuda = ["inference", "ort/cuda"]
 rocm = ["inference", "ort/rocm"]
 coreml = ["inference", "ort/coreml"]

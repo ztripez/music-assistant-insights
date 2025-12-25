@@ -23,7 +23,7 @@ impl IntoResponse for MsgPackRejection {
             },
         };
 
-        match rmp_serde::to_vec(&body) {
+        match rmp_serde::to_vec_named(&body) {
             Ok(bytes) => (
                 StatusCode::BAD_REQUEST,
                 [("content-type", "application/msgpack")],
