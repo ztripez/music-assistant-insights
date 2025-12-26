@@ -657,18 +657,29 @@ impl VectorStorage for QdrantStorage {
 
         let point = &response.result[0];
         let embedding = match &point.vectors {
-            Some(vectors) => vectors
-                .vectors_options
-                .as_ref()
-                .and_then(|v| match v {
-                    qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(vec) => {
-                        Some(vec.data.clone())
+            Some(vectors) => {
+                let vec = vectors
+                    .vectors_options
+                    .as_ref()
+                    .and_then(|v| match v {
+                        qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(vec) => {
+                            Some(vec.clone().into_vector())
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        StorageError::OperationFailed("No vector data found".to_string())
+                    })?;
+
+                match vec {
+                    qdrant_client::qdrant::vector_output::Vector::Dense(dense) => dense.data,
+                    _ => {
+                        return Err(StorageError::OperationFailed(
+                            "Expected dense vector".to_string(),
+                        ))
                     }
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    StorageError::OperationFailed("No vector data found".to_string())
-                })?,
+                }
+            }
             None => {
                 return Err(StorageError::OperationFailed(
                     "No vectors in point".to_string(),
@@ -750,18 +761,25 @@ impl VectorStorage for QdrantStorage {
 
         for point in response.result {
             let embedding = match &point.vectors {
-                Some(vectors) => vectors
-                    .vectors_options
-                    .as_ref()
-                    .and_then(|v| match v {
-                        qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(vec) => {
-                            Some(vec.data.clone())
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        StorageError::OperationFailed("No vector data found".to_string())
-                    })?,
+                Some(vectors) => {
+                    let vec = vectors
+                        .vectors_options
+                        .as_ref()
+                        .and_then(|v| match v {
+                            qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(vec) => {
+                                Some(vec.clone().into_vector())
+                            }
+                            _ => None,
+                        })
+                        .ok_or_else(|| {
+                            StorageError::OperationFailed("No vector data found".to_string())
+                        })?;
+
+                    match vec {
+                        qdrant_client::qdrant::vector_output::Vector::Dense(dense) => dense.data,
+                        _ => continue, // Skip non-dense vectors
+                    }
+                }
                 None => continue,
             };
 
