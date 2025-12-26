@@ -89,6 +89,8 @@ directories = "5"
 urlencoding = "2"
 mel_spec = { version = "0.3.3", optional = true }
 dashmap = "6.1.0"
+tracing-appender = "0.2.4"
+dirs = "6.0.0"
 
 [dev-dependencies]
 tokio-test = "0.4"

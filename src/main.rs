@@ -2,6 +2,7 @@
 
 use anyhow::Context;
 use clap::Parser;
+use std::path::PathBuf;
 use tokio::signal;
 #[cfg(any(feature = "inference", feature = "storage", feature = "storage-file"))]
 use tracing::error;
@@ -81,6 +82,14 @@ struct Cli {
     /// Quiet mode (only show warnings and errors)
     #[arg(short, long)]
     quiet: bool,
+
+    /// Enable file logging (writes to ~/.local/share/insight-sidecar/logs/)
+    #[arg(long, env = "INSIGHT_LOG_FILE")]
+    log_file: bool,
+
+    /// Custom log directory (default: ~/.local/share/insight-sidecar/logs)
+    #[arg(long, env = "INSIGHT_LOG_DIR")]
+    log_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -88,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging based on verbosity
-    init_logging(cli.verbose, cli.quiet);
+    init_logging(cli.verbose, cli.quiet, cli.log_file, cli.log_dir)?;
 
     print_banner();
 
@@ -501,7 +510,12 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
 }
 
 /// Initialize the tracing subscriber for logging
-fn init_logging(verbose: u8, quiet: bool) {
+fn init_logging(
+    verbose: u8,
+    quiet: bool,
+    log_file: bool,
+    log_dir: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let level = if quiet {
         "warn"
     } else {
@@ -512,12 +526,49 @@ fn init_logging(verbose: u8, quiet: bool) {
         }
     };
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| level.into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let env_filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| level.into());
+
+    let registry = tracing_subscriber::registry().with(env_filter);
+
+    if log_file {
+        // Determine log directory
+        let log_path = log_dir.unwrap_or_else(|| {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("insight-sidecar")
+                .join("logs")
+        });
+
+        // Create log directory if it doesn't exist
+        std::fs::create_dir_all(&log_path).with_context(|| {
+            format!("Failed to create log directory: {}", log_path.display())
+        })?;
+
+        // Create file appender with daily rotation
+        let file_appender = tracing_appender::rolling::daily(&log_path, "insight-sidecar.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+        // Leak the guard to keep it alive for the program lifetime
+        Box::leak(Box::new(_guard));
+
+        // Dual output: console + file
+        registry
+            .with(tracing_subscriber::fmt::layer())
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(non_blocking)
+                    .with_ansi(false), // No ANSI colors in file
+            )
+            .init();
+
+        info!("File logging enabled at: {}/insight-sidecar.log.*", log_path.display());
+    } else {
+        // Console only
+        registry.with(tracing_subscriber::fmt::layer()).init();
+    }
+
+    Ok(())
 }
 
 /// Graceful shutdown signal handler
