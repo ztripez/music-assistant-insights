@@ -757,16 +757,24 @@ impl VectorStorage for UsearchStorage {
             self.audio_id_map.read_or_recover()
         };
 
-        let _key = match id_map.get(track_id) {
+        let key = match id_map.get(track_id) {
             Some(&k) => k,
             None => return Ok(None),
         };
 
         drop(id_map);
 
-        // usearch doesn't have a direct "get vector by key" method
-        // We return metadata only with a placeholder embedding
-        let embedding = vec![0.0f32; EMBEDDING_DIM];
+        // Get the embedding from the index
+        let index = if collection == TEXT_COLLECTION {
+            self.text_index.read_or_recover()
+        } else {
+            self.audio_index.read_or_recover()
+        };
+
+        let mut embedding = vec![0.0f32; EMBEDDING_DIM];
+        index.get(key, &mut embedding).map_err(|e| {
+            StorageError::OperationFailed(format!("Failed to get vector from index: {}", e))
+        })?;
 
         Ok(Some(StoredEmbedding {
             embedding,
