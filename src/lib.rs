@@ -11,6 +11,7 @@ pub mod inference;
 pub mod mood;
 pub mod server;
 pub mod storage;
+pub mod taste;
 pub mod types;
 #[cfg(feature = "watcher")]
 pub mod watcher;
