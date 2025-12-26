@@ -10,7 +10,7 @@ The sidecar supports optional file logging for debugging and session sharing.
 ./insight-sidecar --log-file
 ```
 
-Logs will be written to: `~/.local/share/insight-sidecar/logs/insight-sidecar.log.YYYY-MM-DD`
+Logs will be written to: `~/.local/share/insight-sidecar/logs/insight-sidecar.log`
 
 ### Enable file logging with custom directory
 
@@ -28,10 +28,11 @@ export INSIGHT_LOG_DIR=/path/to/logs  # optional
 
 ## Log Rotation
 
-Logs are automatically rotated daily. Each day creates a new file with the format:
-- `insight-sidecar.log.2025-12-26`
-- `insight-sidecar.log.2025-12-27`
-- etc.
+Logs are automatically rotated on each server start:
+- **Current log**: `insight-sidecar.log`
+- **Previous log**: `insight-sidecar.log.1`
+
+When the server starts, the existing log is renamed to `.1` (overwriting any older backup).
 
 ## Log Format
 
@@ -93,8 +94,11 @@ curl http://localhost:8096/api/v1/health
 
 # Stop sidecar (Ctrl+C)
 
-# View the log
-cat ~/.local/share/insight-sidecar/logs/insight-sidecar.log.$(date +%Y-%m-%d)
+# View the current log
+cat ~/.local/share/insight-sidecar/logs/insight-sidecar.log
+
+# View the previous log (from last run)
+cat ~/.local/share/insight-sidecar/logs/insight-sidecar.log.1
 ```
 
 ## Log Contents
