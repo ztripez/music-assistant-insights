@@ -122,6 +122,48 @@ impl UsearchStorage {
         (index_path, metadata_path, idmap_path)
     }
 
+    /// Move corrupt storage files to a .corrupt subdirectory for user inspection
+    fn quarantine_corrupt_files(&self, collection: &str) -> Result<(), StorageError> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let (index_path, meta_path, idmap_path) = self.get_paths(collection);
+        let corrupt_dir = self.data_dir.join(".corrupt");
+
+        // Create .corrupt directory if it doesn't exist
+        fs::create_dir_all(&corrupt_dir).map_err(|e| {
+            StorageError::OperationFailed(format!("Failed to create .corrupt directory: {}", e))
+        })?;
+
+        // Generate timestamp for unique naming
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Move each file if it exists
+        for (src_path, file_type) in [
+            (index_path, "usearch"),
+            (meta_path, "meta.bin"),
+            (idmap_path, "idmap.bin"),
+        ] {
+            if src_path.exists() {
+                let file_name = format!("{}_{}.{}.corrupt", collection, timestamp, file_type);
+                let dest_path = corrupt_dir.join(file_name);
+
+                fs::rename(&src_path, &dest_path).map_err(|e| {
+                    StorageError::OperationFailed(format!(
+                        "Failed to move corrupt file {:?} to {:?}: {}",
+                        src_path, dest_path, e
+                    ))
+                })?;
+
+                info!("Moved corrupt file: {:?} -> {:?}", src_path, dest_path);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Load indices and metadata from disk
     fn load_from_disk(&self) -> Result<(), StorageError> {
         // Load text collection
@@ -129,30 +171,48 @@ impl UsearchStorage {
         if text_index_path.exists() {
             info!("Loading text index from {:?}", text_index_path);
             let index = self.text_index.write_or_recover();
-            index
-                .load(text_index_path.to_string_lossy().as_ref())
-                .map_err(|e| {
-                    StorageError::OperationFailed(format!("Failed to load index: {}", e))
-                })?;
+            if let Err(e) = index.load(text_index_path.to_string_lossy().as_ref()) {
+                warn!("Failed to load text index: {}. Moving corrupt files aside.", e);
+                self.quarantine_corrupt_files(TEXT_COLLECTION)?;
+                info!("Corrupt text index files moved to .corrupt. Starting with fresh index.");
+            } else {
+                // Index loaded successfully, now load metadata and id map
+                if text_meta_path.exists() {
+                    match fs::read(&text_meta_path)
+                        .and_then(|data| {
+                            bincode::deserialize(&data)
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                        }) {
+                        Ok(metadata) => {
+                            *self.text_metadata.write_or_recover() = metadata;
+                        }
+                        Err(e) => {
+                            warn!("Failed to load text metadata: {}. Moving corrupt files aside.", e);
+                            self.quarantine_corrupt_files(TEXT_COLLECTION)?;
+                            info!("Corrupt text metadata files moved to .corrupt. Starting with fresh index.");
+                            return Ok(());
+                        }
+                    }
+                }
 
-            if text_meta_path.exists() {
-                let data = fs::read(&text_meta_path).map_err(|e| {
-                    StorageError::OperationFailed(format!("Failed to read metadata: {}", e))
-                })?;
-                let metadata: HashMap<String, TrackMetadata> = bincode::deserialize(&data)
-                    .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-                *self.text_metadata.write_or_recover() = metadata;
-            }
-
-            if text_idmap_path.exists() {
-                let data = fs::read(&text_idmap_path).map_err(|e| {
-                    StorageError::OperationFailed(format!("Failed to read id map: {}", e))
-                })?;
-                let (id_map, next_key): (HashMap<String, u64>, u64) =
-                    bincode::deserialize(&data)
-                        .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-                *self.text_id_map.write_or_recover() = id_map;
-                *self.text_next_key.write_or_recover() = next_key;
+                if text_idmap_path.exists() {
+                    match fs::read(&text_idmap_path)
+                        .and_then(|data| {
+                            bincode::deserialize(&data)
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                        }) {
+                        Ok((id_map, next_key)) => {
+                            *self.text_id_map.write_or_recover() = id_map;
+                            *self.text_next_key.write_or_recover() = next_key;
+                        }
+                        Err(e) => {
+                            warn!("Failed to load text id map: {}. Moving corrupt files aside.", e);
+                            self.quarantine_corrupt_files(TEXT_COLLECTION)?;
+                            info!("Corrupt text id map files moved to .corrupt. Starting with fresh index.");
+                            return Ok(());
+                        }
+                    }
+                }
             }
         }
 
@@ -162,30 +222,48 @@ impl UsearchStorage {
         if audio_index_path.exists() {
             info!("Loading audio index from {:?}", audio_index_path);
             let index = self.audio_index.write_or_recover();
-            index
-                .load(audio_index_path.to_string_lossy().as_ref())
-                .map_err(|e| {
-                    StorageError::OperationFailed(format!("Failed to load index: {}", e))
-                })?;
+            if let Err(e) = index.load(audio_index_path.to_string_lossy().as_ref()) {
+                warn!("Failed to load audio index: {}. Moving corrupt files aside.", e);
+                self.quarantine_corrupt_files(AUDIO_COLLECTION)?;
+                info!("Corrupt audio index files moved to .corrupt. Starting with fresh index.");
+            } else {
+                // Index loaded successfully, now load metadata and id map
+                if audio_meta_path.exists() {
+                    match fs::read(&audio_meta_path)
+                        .and_then(|data| {
+                            bincode::deserialize(&data)
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                        }) {
+                        Ok(metadata) => {
+                            *self.audio_metadata.write_or_recover() = metadata;
+                        }
+                        Err(e) => {
+                            warn!("Failed to load audio metadata: {}. Moving corrupt files aside.", e);
+                            self.quarantine_corrupt_files(AUDIO_COLLECTION)?;
+                            info!("Corrupt audio metadata files moved to .corrupt. Starting with fresh index.");
+                            return Ok(());
+                        }
+                    }
+                }
 
-            if audio_meta_path.exists() {
-                let data = fs::read(&audio_meta_path).map_err(|e| {
-                    StorageError::OperationFailed(format!("Failed to read metadata: {}", e))
-                })?;
-                let metadata: HashMap<String, TrackMetadata> = bincode::deserialize(&data)
-                    .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-                *self.audio_metadata.write_or_recover() = metadata;
-            }
-
-            if audio_idmap_path.exists() {
-                let data = fs::read(&audio_idmap_path).map_err(|e| {
-                    StorageError::OperationFailed(format!("Failed to read id map: {}", e))
-                })?;
-                let (id_map, next_key): (HashMap<String, u64>, u64) =
-                    bincode::deserialize(&data)
-                        .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-                *self.audio_id_map.write_or_recover() = id_map;
-                *self.audio_next_key.write_or_recover() = next_key;
+                if audio_idmap_path.exists() {
+                    match fs::read(&audio_idmap_path)
+                        .and_then(|data| {
+                            bincode::deserialize(&data)
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                        }) {
+                        Ok((id_map, next_key)) => {
+                            *self.audio_id_map.write_or_recover() = id_map;
+                            *self.audio_next_key.write_or_recover() = next_key;
+                        }
+                        Err(e) => {
+                            warn!("Failed to load audio id map: {}. Moving corrupt files aside.", e);
+                            self.quarantine_corrupt_files(AUDIO_COLLECTION)?;
+                            info!("Corrupt audio id map files moved to .corrupt. Starting with fresh index.");
+                            return Ok(());
+                        }
+                    }
+                }
             }
         }
 
@@ -193,13 +271,37 @@ impl UsearchStorage {
         let profiles_path = self.data_dir.join("taste_profiles.bin");
         if profiles_path.exists() {
             info!("Loading taste profiles from {:?}", profiles_path);
-            let data = fs::read(&profiles_path).map_err(|e| {
-                StorageError::OperationFailed(format!("Failed to read taste profiles: {}", e))
-            })?;
-            let profiles: HashMap<String, crate::types::TasteProfile> =
-                bincode::deserialize(&data)
-                    .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-            *self.taste_profiles.write_or_recover() = profiles;
+            match fs::read(&profiles_path)
+                .and_then(|data| {
+                    bincode::deserialize(&data)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                }) {
+                Ok(profiles) => {
+                    *self.taste_profiles.write_or_recover() = profiles;
+                }
+                Err(e) => {
+                    warn!("Failed to load taste profiles: {}. Moving corrupt file aside.", e);
+                    let corrupt_dir = self.data_dir.join(".corrupt");
+                    fs::create_dir_all(&corrupt_dir).map_err(|e| {
+                        StorageError::OperationFailed(format!("Failed to create .corrupt directory: {}", e))
+                    })?;
+
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let dest_path = corrupt_dir.join(format!("taste_profiles_{}.bin.corrupt", timestamp));
+
+                    fs::rename(&profiles_path, &dest_path).map_err(|e| {
+                        StorageError::OperationFailed(format!(
+                            "Failed to move corrupt taste profiles: {}", e
+                        ))
+                    })?;
+
+                    info!("Moved corrupt taste profiles file: {:?} -> {:?}", profiles_path, dest_path);
+                }
+            }
         }
 
         Ok(())

@@ -592,7 +592,15 @@ impl VectorStorage for QdrantStorage {
         const PROFILE_COLLECTION: &str = "taste_profiles";
         self.ensure_collection(PROFILE_COLLECTION).await?;
 
-        let point_id = format!("{}::{}", profile.user_id, profile.profile_type);
+        // Create a unique identifier for this profile
+        let profile_key = format!("{}::{}", profile.user_id, profile.profile_type);
+
+        // Convert to UUID-based PointId (same pattern as tracks)
+        let point_id = PointId {
+            point_id_options: Some(PointIdOptions::Uuid(
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, profile_key.as_bytes()).to_string(),
+            )),
+        };
 
         let mut payload = Payload::new();
         payload.insert("user_id", profile.user_id.clone());
@@ -639,12 +647,18 @@ impl VectorStorage for QdrantStorage {
             return Ok(None);
         }
 
-        let point_id = format!("{}::{}", user_id, profile_type);
+        // Create the same UUID-based point ID used during storage
+        let profile_key = format!("{}::{}", user_id, profile_type);
+        let point_id = PointId {
+            point_id_options: Some(PointIdOptions::Uuid(
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, profile_key.as_bytes()).to_string(),
+            )),
+        };
 
         let response = self
             .client
             .get_points(
-                GetPointsBuilder::new(&full_name, vec![point_id.into()])
+                GetPointsBuilder::new(&full_name, vec![point_id])
                     .with_payload(true)
                     .with_vectors(true),
             )
@@ -839,15 +853,19 @@ impl VectorStorage for QdrantStorage {
             return Ok(());
         }
 
-        let point_id = format!("{}::{}", user_id, profile_type);
+        // Create the same UUID-based point ID used during storage
+        let profile_key = format!("{}::{}", user_id, profile_type);
+        let point_id = PointId {
+            point_id_options: Some(PointIdOptions::Uuid(
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, profile_key.as_bytes()).to_string(),
+            )),
+        };
 
         self.client
             .delete_points(
                 DeletePointsBuilder::new(&full_name)
                     .points(PointsIdsList {
-                        ids: vec![PointId {
-                            point_id_options: Some(PointIdOptions::Uuid(point_id)),
-                        }],
+                        ids: vec![point_id],
                     })
                     .wait(true),
             )

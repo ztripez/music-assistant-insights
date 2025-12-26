@@ -1,14 +1,11 @@
 //! Taste profile API endpoints.
 
-use axum::{
-    extract::{Path, Query, State},
-    Json,
-};
+use axum::extract::{Path, Query, State};
 use std::collections::HashMap;
 use std::time::SystemTime;
 
 use crate::error::AppError;
-use crate::storage::{SearchFilter, AUDIO_COLLECTION};
+use crate::storage::{SearchFilter, AUDIO_COLLECTION, TEXT_COLLECTION};
 use crate::taste::TasteVectorComputer;
 use crate::types::{
     ComputeProfileRequest, ComputeProfileResponse, DeleteProfileRequest, DeleteProfileResponse,
@@ -16,6 +13,8 @@ use crate::types::{
     ProfileTypeRequest, RecommendRequest, RecommendResponse, RecommendedTrack, TasteProfile,
 };
 
+use super::extractors::MsgPackExtractor;
+use super::routes::MsgPack;
 use super::AppState;
 
 /// Compute taste profile from user interactions
@@ -24,8 +23,8 @@ use super::AppState;
 pub async fn compute_profile(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-    Json(req): Json<ComputeProfileRequest>,
-) -> Result<Json<ComputeProfileResponse>, AppError> {
+    MsgPackExtractor(req): MsgPackExtractor<ComputeProfileRequest>,
+) -> Result<MsgPack<ComputeProfileResponse>, AppError> {
     let storage = state
         .storage
         .as_ref()
@@ -37,12 +36,15 @@ pub async fn compute_profile(
         ));
     }
 
-    // Fetch track embeddings from storage
+    // Fetch track embeddings from storage (try text collection first, fall back to audio)
     let mut track_embeddings = HashMap::new();
     for interaction in &req.interactions {
-        if let Ok(Some(stored)) = storage
-            .get(AUDIO_COLLECTION, &interaction.track_id)
-            .await
+        // Try text collection first (Phase 1)
+        if let Ok(Some(stored)) = storage.get(TEXT_COLLECTION, &interaction.track_id).await {
+            track_embeddings.insert(interaction.track_id.clone(), stored.embedding);
+        }
+        // Fall back to audio collection if no text embedding found
+        else if let Ok(Some(stored)) = storage.get(AUDIO_COLLECTION, &interaction.track_id).await
         {
             track_embeddings.insert(interaction.track_id.clone(), stored.embedding);
         }
@@ -96,7 +98,7 @@ pub async fn compute_profile(
         }
     }
 
-    Ok(Json(ComputeProfileResponse { user_id, profiles }))
+    Ok(MsgPack(ComputeProfileResponse { user_id, profiles }))
 }
 
 /// Get personalized recommendations based on taste profile
@@ -105,8 +107,8 @@ pub async fn compute_profile(
 pub async fn get_recommendations(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-    Json(req): Json<RecommendRequest>,
-) -> Result<Json<RecommendResponse>, AppError> {
+    MsgPackExtractor(req): MsgPackExtractor<RecommendRequest>,
+) -> Result<MsgPack<RecommendResponse>, AppError> {
     let storage = state
         .storage
         .as_ref()
@@ -152,7 +154,7 @@ pub async fn get_recommendations(
         })
         .collect();
 
-    Ok(Json(RecommendResponse {
+    Ok(MsgPack(RecommendResponse {
         tracks,
         profile_confidence: profile.confidence,
     }))
@@ -165,7 +167,7 @@ pub async fn get_taste_vector(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
     Query(req): Query<GetTasteVectorRequest>,
-) -> Result<Json<GetTasteVectorResponse>, AppError> {
+) -> Result<MsgPack<GetTasteVectorResponse>, AppError> {
     let storage = state
         .storage
         .as_ref()
@@ -181,7 +183,7 @@ pub async fn get_taste_vector(
             ))
         })?;
 
-    Ok(Json(GetTasteVectorResponse { profile }))
+    Ok(MsgPack(GetTasteVectorResponse { profile }))
 }
 
 /// Delete a taste profile
@@ -190,8 +192,8 @@ pub async fn get_taste_vector(
 pub async fn delete_profile(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-    Json(req): Json<DeleteProfileRequest>,
-) -> Result<Json<DeleteProfileResponse>, AppError> {
+    MsgPackExtractor(req): MsgPackExtractor<DeleteProfileRequest>,
+) -> Result<MsgPack<DeleteProfileResponse>, AppError> {
     let storage = state
         .storage
         .as_ref()
@@ -201,7 +203,7 @@ pub async fn delete_profile(
         .delete_taste_profile(&user_id, &req.profile_type)
         .await?;
 
-    Ok(Json(DeleteProfileResponse {
+    Ok(MsgPack(DeleteProfileResponse {
         deleted: true,
         message: format!("Deleted {} profile for user {}", req.profile_type, user_id),
     }))
@@ -213,7 +215,7 @@ pub async fn delete_profile(
 pub async fn delete_all_profiles(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-) -> Result<Json<DeleteProfileResponse>, AppError> {
+) -> Result<MsgPack<DeleteProfileResponse>, AppError> {
     let storage = state
         .storage
         .as_ref()
@@ -221,7 +223,7 @@ pub async fn delete_all_profiles(
 
     storage.delete_user_profiles(&user_id).await?;
 
-    Ok(Json(DeleteProfileResponse {
+    Ok(MsgPack(DeleteProfileResponse {
         deleted: true,
         message: format!("Deleted all profiles for user {}", user_id),
     }))
