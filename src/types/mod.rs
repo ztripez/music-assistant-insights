@@ -195,3 +195,94 @@ pub struct SystemStatus {
     /// Enabled feature flags
     pub features: Vec<String>,
 }
+
+// ============================================================================
+// Taste Profile Types
+// ============================================================================
+
+/// Type of taste profile
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(tag = "type", content = "value")]
+pub enum ProfileType {
+    /// Global profile across all listening
+    Global,
+    /// Mood-based profile (energetic, peaceful, aggressive, melancholic)
+    Mood(String),
+    /// Context-based profile (weekday_morning, weekend_evening, etc.)
+    Context(String),
+}
+
+impl std::fmt::Display for ProfileType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProfileType::Global => write!(f, "global"),
+            ProfileType::Mood(mood) => write!(f, "mood:{}", mood),
+            ProfileType::Context(ctx) => write!(f, "context:{}", ctx),
+        }
+    }
+}
+
+/// User taste profile with embedding vector
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TasteProfile {
+    /// User ID this profile belongs to
+    pub user_id: String,
+    /// Type of profile
+    pub profile_type: ProfileType,
+    /// 512-dimensional taste vector (normalized)
+    pub embedding: Vec<f32>,
+    /// Number of tracks that contributed to this profile
+    pub track_count: u32,
+    /// Confidence score (0.0-1.0), higher with more data
+    pub confidence: f32,
+    /// Unix timestamp when profile was last updated
+    pub updated_at: i64,
+}
+
+/// Type of user interaction signal
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalType {
+    /// Track played to completion
+    FullPlay,
+    /// Track partially played (>50%)
+    PartialPlay,
+    /// Track skipped early (<30s or <25% completion)
+    Skip,
+    /// Track played again within same day
+    Repeat,
+    /// Track explicitly liked/favorited
+    Favorite,
+    /// Track explicitly disliked
+    Dislike,
+    /// Track saved to playlist
+    Save,
+}
+
+/// User interaction with a track
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserInteraction {
+    /// Track ID (MA item_id)
+    pub track_id: String,
+    /// Unix timestamp of interaction
+    pub timestamp: i64,
+    /// Type of signal
+    pub signal_type: SignalType,
+    /// Seconds of track played
+    pub seconds_played: f32,
+    /// Total track duration
+    pub duration: f32,
+}
+
+/// Result of taste vector computation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TasteVector {
+    /// 512-dimensional embedding (normalized)
+    pub embedding: Vec<f32>,
+    /// Number of tracks used
+    pub track_count: u32,
+    /// Confidence score (0.0-1.0)
+    pub confidence: f32,
+    /// Total weight sum (for debugging)
+    pub total_weight: f32,
+}

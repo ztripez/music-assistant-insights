@@ -56,6 +56,8 @@ pub struct UsearchStorage {
     /// Next available key for each collection
     text_next_key: RwLock<u64>,
     audio_next_key: RwLock<u64>,
+    /// Taste profiles storage (user_id::profile_type -> profile)
+    taste_profiles: RwLock<HashMap<String, crate::types::TasteProfile>>,
 }
 
 impl std::fmt::Debug for UsearchStorage {
@@ -103,6 +105,7 @@ impl UsearchStorage {
             audio_id_map: RwLock::new(HashMap::new()),
             text_next_key: RwLock::new(0),
             audio_next_key: RwLock::new(0),
+            taste_profiles: RwLock::new(HashMap::new()),
         };
 
         // Try to load existing data
@@ -186,6 +189,19 @@ impl UsearchStorage {
             }
         }
 
+        // Load taste profiles
+        let profiles_path = self.data_dir.join("taste_profiles.bin");
+        if profiles_path.exists() {
+            info!("Loading taste profiles from {:?}", profiles_path);
+            let data = fs::read(&profiles_path).map_err(|e| {
+                StorageError::OperationFailed(format!("Failed to read taste profiles: {}", e))
+            })?;
+            let profiles: HashMap<String, crate::types::TasteProfile> =
+                bincode::deserialize(&data)
+                    .map_err(|e| StorageError::SerializationError(e.to_string()))?;
+            *self.taste_profiles.write_or_recover() = profiles;
+        }
+
         Ok(())
     }
 
@@ -244,6 +260,22 @@ impl UsearchStorage {
         .map_err(|e| StorageError::OperationFailed(format!("Spawn blocking failed: {}", e)))??;
 
         debug!(collection, index_path = %index_path_str, "Saved to disk");
+        Ok(())
+    }
+
+    /// Persist taste profiles to disk
+    fn persist_taste_profiles(&self) -> Result<(), StorageError> {
+        let profiles = self.taste_profiles.read_or_recover();
+        let profiles_path = self.data_dir.join("taste_profiles.bin");
+
+        let data = bincode::serialize(&*profiles)
+            .map_err(|e| StorageError::SerializationError(e.to_string()))?;
+
+        fs::write(&profiles_path, data).map_err(|e| {
+            StorageError::OperationFailed(format!("Failed to write taste profiles: {}", e))
+        })?;
+
+        debug!("Saved taste profiles to disk");
         Ok(())
     }
 
@@ -658,5 +690,65 @@ impl VectorStorage for UsearchStorage {
         };
 
         Ok(index.size() as u64)
+    }
+
+    async fn store_taste_profile(
+        &self,
+        profile: crate::types::TasteProfile,
+    ) -> Result<(), StorageError> {
+        let key = format!("{}::{}", profile.user_id, profile.profile_type);
+
+        let mut profiles = self.taste_profiles.write_or_recover();
+        profiles.insert(key, profile);
+        drop(profiles);
+
+        self.persist_taste_profiles()
+    }
+
+    async fn get_taste_profile(
+        &self,
+        user_id: &str,
+        profile_type: &crate::types::ProfileType,
+    ) -> Result<Option<crate::types::TasteProfile>, StorageError> {
+        let key = format!("{}::{}", user_id, profile_type);
+
+        let profiles = self.taste_profiles.read_or_recover();
+        Ok(profiles.get(&key).cloned())
+    }
+
+    async fn list_user_profiles(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<crate::types::TasteProfile>, StorageError> {
+        let profiles = self.taste_profiles.read_or_recover();
+        let user_profiles: Vec<_> = profiles
+            .values()
+            .filter(|p| p.user_id == user_id)
+            .cloned()
+            .collect();
+
+        Ok(user_profiles)
+    }
+
+    async fn delete_taste_profile(
+        &self,
+        user_id: &str,
+        profile_type: &crate::types::ProfileType,
+    ) -> Result<(), StorageError> {
+        let key = format!("{}::{}", user_id, profile_type);
+
+        let mut profiles = self.taste_profiles.write_or_recover();
+        profiles.remove(&key);
+        drop(profiles);
+
+        self.persist_taste_profiles()
+    }
+
+    async fn delete_user_profiles(&self, user_id: &str) -> Result<(), StorageError> {
+        let mut profiles = self.taste_profiles.write_or_recover();
+        profiles.retain(|_, profile| profile.user_id != user_id);
+        drop(profiles);
+
+        self.persist_taste_profiles()
     }
 }

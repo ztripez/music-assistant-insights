@@ -18,6 +18,8 @@ pub use usearch_store::UsearchStorage;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::types::{ProfileType, TasteProfile};
+
 /// Error type for storage operations
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -316,6 +318,30 @@ pub trait VectorStorage: Send + Sync {
 
     /// Get the count of embeddings in a collection
     async fn count(&self, collection: &str) -> Result<u64, StorageError>;
+
+    // Taste profile methods
+    /// Store or update a taste profile
+    async fn store_taste_profile(&self, profile: TasteProfile) -> Result<(), StorageError>;
+
+    /// Get a taste profile by user ID and profile type
+    async fn get_taste_profile(
+        &self,
+        user_id: &str,
+        profile_type: &ProfileType,
+    ) -> Result<Option<TasteProfile>, StorageError>;
+
+    /// List all profiles for a user
+    async fn list_user_profiles(&self, user_id: &str) -> Result<Vec<TasteProfile>, StorageError>;
+
+    /// Delete a specific taste profile
+    async fn delete_taste_profile(
+        &self,
+        user_id: &str,
+        profile_type: &ProfileType,
+    ) -> Result<(), StorageError>;
+
+    /// Delete all profiles for a user
+    async fn delete_user_profiles(&self, user_id: &str) -> Result<(), StorageError>;
 }
 
 #[cfg(test)]

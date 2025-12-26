@@ -584,4 +584,289 @@ impl VectorStorage for QdrantStorage {
             .map(|r| r.points_count.unwrap_or(0))
             .unwrap_or(0))
     }
+
+    async fn store_taste_profile(
+        &self,
+        profile: crate::types::TasteProfile,
+    ) -> Result<(), StorageError> {
+        const PROFILE_COLLECTION: &str = "taste_profiles";
+        self.ensure_collection(PROFILE_COLLECTION).await?;
+
+        let point_id = format!("{}::{}", profile.user_id, profile.profile_type);
+
+        let mut payload = Payload::new();
+        payload.insert("user_id", profile.user_id.clone());
+        payload.insert(
+            "profile_type",
+            serde_json::to_value(&profile.profile_type)
+                .map_err(|e| StorageError::SerializationError(e.to_string()))?,
+        );
+        payload.insert("track_count", profile.track_count as i64);
+        payload.insert("confidence", profile.confidence as f64);
+        payload.insert("updated_at", profile.updated_at);
+
+        let point = PointStruct::new(point_id, profile.embedding, payload);
+
+        self.client
+            .upsert_points(
+                UpsertPointsBuilder::new(
+                    self.collection_name(PROFILE_COLLECTION),
+                    vec![point],
+                )
+                .wait(true),
+            )
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_taste_profile(
+        &self,
+        user_id: &str,
+        profile_type: &crate::types::ProfileType,
+    ) -> Result<Option<crate::types::TasteProfile>, StorageError> {
+        const PROFILE_COLLECTION: &str = "taste_profiles";
+        let full_name = self.collection_name(PROFILE_COLLECTION);
+
+        let exists = self
+            .client
+            .collection_exists(&full_name)
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        if !exists {
+            return Ok(None);
+        }
+
+        let point_id = format!("{}::{}", user_id, profile_type);
+
+        let response = self
+            .client
+            .get_points(
+                GetPointsBuilder::new(&full_name, vec![point_id.into()])
+                    .with_payload(true)
+                    .with_vectors(true),
+            )
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        if response.result.is_empty() {
+            return Ok(None);
+        }
+
+        let point = &response.result[0];
+        let embedding = match &point.vectors {
+            Some(vectors) => vectors
+                .vectors_options
+                .as_ref()
+                .and_then(|v| match v {
+                    qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(vec) => {
+                        Some(vec.data.clone())
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    StorageError::OperationFailed("No vector data found".to_string())
+                })?,
+            None => {
+                return Err(StorageError::OperationFailed(
+                    "No vectors in point".to_string(),
+                ))
+            }
+        };
+
+        let payload = &point.payload;
+        let profile = crate::types::TasteProfile {
+            user_id: payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| user_id.to_string()),
+            profile_type: serde_json::from_value(
+                payload
+                    .get("profile_type")
+                    .ok_or_else(|| {
+                        StorageError::SerializationError("Missing profile_type".to_string())
+                    })?
+                    .clone()
+                    .into(),
+            )
+            .map_err(|e| StorageError::SerializationError(e.to_string()))?,
+            embedding,
+            track_count: payload
+                .get("track_count")
+                .and_then(|v| v.as_integer())
+                .unwrap_or(0) as u32,
+            confidence: payload
+                .get("confidence")
+                .and_then(|v| v.as_double())
+                .unwrap_or(0.0) as f32,
+            updated_at: payload
+                .get("updated_at")
+                .and_then(|v| v.as_integer())
+                .unwrap_or(0),
+        };
+
+        Ok(Some(profile))
+    }
+
+    async fn list_user_profiles(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<crate::types::TasteProfile>, StorageError> {
+        const PROFILE_COLLECTION: &str = "taste_profiles";
+        let full_name = self.collection_name(PROFILE_COLLECTION);
+
+        let exists = self
+            .client
+            .collection_exists(&full_name)
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        if !exists {
+            return Ok(Vec::new());
+        }
+
+        // Use scroll to get all profiles for a user
+        let filter = Filter::must(vec![Condition::matches(
+            "user_id",
+            user_id.to_string(),
+        )]);
+
+        let response = self
+            .client
+            .scroll(
+                qdrant_client::qdrant::ScrollPointsBuilder::new(&full_name)
+                    .filter(filter)
+                    .with_payload(true)
+                    .with_vectors(true)
+                    .limit(100),
+            )
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        let mut profiles = Vec::new();
+
+        for point in response.result {
+            let embedding = match &point.vectors {
+                Some(vectors) => vectors
+                    .vectors_options
+                    .as_ref()
+                    .and_then(|v| match v {
+                        qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(vec) => {
+                            Some(vec.data.clone())
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        StorageError::OperationFailed("No vector data found".to_string())
+                    })?,
+                None => continue,
+            };
+
+            let payload = &point.payload;
+            let profile = crate::types::TasteProfile {
+                user_id: payload
+                    .get("user_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| user_id.to_string()),
+                profile_type: serde_json::from_value(
+                    payload
+                        .get("profile_type")
+                        .ok_or_else(|| {
+                            StorageError::SerializationError("Missing profile_type".to_string())
+                        })?
+                        .clone()
+                        .into(),
+                )
+                .map_err(|e| StorageError::SerializationError(e.to_string()))?,
+                embedding,
+                track_count: payload
+                    .get("track_count")
+                    .and_then(|v| v.as_integer())
+                    .unwrap_or(0) as u32,
+                confidence: payload
+                    .get("confidence")
+                    .and_then(|v| v.as_double())
+                    .unwrap_or(0.0) as f32,
+                updated_at: payload
+                    .get("updated_at")
+                    .and_then(|v| v.as_integer())
+                    .unwrap_or(0),
+            };
+
+            profiles.push(profile);
+        }
+
+        Ok(profiles)
+    }
+
+    async fn delete_taste_profile(
+        &self,
+        user_id: &str,
+        profile_type: &crate::types::ProfileType,
+    ) -> Result<(), StorageError> {
+        const PROFILE_COLLECTION: &str = "taste_profiles";
+        let full_name = self.collection_name(PROFILE_COLLECTION);
+
+        let exists = self
+            .client
+            .collection_exists(&full_name)
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        if !exists {
+            return Ok(());
+        }
+
+        let point_id = format!("{}::{}", user_id, profile_type);
+
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(&full_name)
+                    .points(PointsIdsList {
+                        ids: vec![PointId {
+                            point_id_options: Some(PointIdOptions::Uuid(point_id)),
+                        }],
+                    })
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn delete_user_profiles(&self, user_id: &str) -> Result<(), StorageError> {
+        const PROFILE_COLLECTION: &str = "taste_profiles";
+        let full_name = self.collection_name(PROFILE_COLLECTION);
+
+        let exists = self
+            .client
+            .collection_exists(&full_name)
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        if !exists {
+            return Ok(());
+        }
+
+        let filter = Filter::must(vec![Condition::matches(
+            "user_id",
+            user_id.to_string(),
+        )]);
+
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(&full_name)
+                    .points(filter)
+                    .wait(true),
+            )
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+
+        Ok(())
+    }
 }
