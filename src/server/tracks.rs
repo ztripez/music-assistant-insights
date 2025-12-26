@@ -318,12 +318,34 @@ pub async fn delete_track(
 /// POST /api/v1/tracks/embed-text
 ///
 /// Generate text embedding from metadata and store it in one operation.
+/// Skips embedding generation if metadata_hash matches the stored hash.
 /// Requires both inference and storage features.
 #[cfg(all(feature = "inference", feature = "storage"))]
 pub async fn embed_text_and_store(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<EmbedTextAndStoreRequest>,
 ) -> Result<MsgPack<EmbedTextAndStoreResponse>, AppError> {
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("Storage not configured".to_string()))?;
+
+    // Check if hash matches existing - skip if unchanged
+    if let Some(ref new_hash) = req.metadata.metadata_hash {
+        if let Ok(Some(existing)) = storage.get(TEXT_COLLECTION, &req.track_id).await {
+            if let Some(ref stored_hash) = existing.metadata.metadata_hash {
+                if stored_hash == new_hash {
+                    debug!(track_id = %req.track_id, "Hash unchanged, skipping");
+                    return Ok(MsgPack(EmbedTextAndStoreResponse {
+                        track_id: req.track_id,
+                        stored: false,
+                        text: String::new(),
+                    }));
+                }
+            }
+        }
+    }
+
     // Acquire read lock and clone model for use in blocking task
     let model = {
         let guard = state.model.read().await;
@@ -332,11 +354,6 @@ pub async fn embed_text_and_store(
             .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?
             .clone()
     };
-
-    let storage = state
-        .storage
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("Storage not configured".to_string()))?;
 
     info!(track_id = %req.track_id, "Generating and storing text embedding");
 
@@ -371,14 +388,15 @@ pub async fn embed_text_and_store(
     );
 
     // Build storage metadata
-    let storage_metadata = TrackMetadata::new(req.track_id.clone(), req.metadata.name)
+    let mut storage_metadata = TrackMetadata::new(req.track_id.clone(), req.metadata.name)
         .with_artists(req.metadata.artists)
         .with_genres(req.metadata.genres);
-    let storage_metadata = if let Some(album) = req.metadata.album {
-        storage_metadata.with_album(album)
-    } else {
-        storage_metadata
-    };
+    if let Some(album) = req.metadata.album {
+        storage_metadata = storage_metadata.with_album(album);
+    }
+    if let Some(hash) = req.metadata.metadata_hash {
+        storage_metadata.metadata_hash = Some(hash);
+    }
 
     // Store the embedding
     storage

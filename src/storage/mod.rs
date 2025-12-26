@@ -101,6 +101,9 @@ pub struct TrackMetadata {
     /// Arousal (-1.0 calm to 1.0 energetic)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arousal: Option<f32>,
+    /// Hash of metadata fields for change detection
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_hash: Option<String>,
 }
 
 impl TrackMetadata {
@@ -122,6 +125,7 @@ impl TrackMetadata {
             mood_scores: None,
             valence: None,
             arousal: None,
+            metadata_hash: None,
         }
     }
 

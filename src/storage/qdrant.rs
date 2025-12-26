@@ -215,6 +215,11 @@ impl QdrantStorage {
             .and_then(|v| v.as_double())
             .map(|d| d as f32);
 
+        let metadata_hash = payload
+            .get("metadata_hash")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         Ok(TrackMetadata {
             track_id,
             name,
@@ -228,6 +233,7 @@ impl QdrantStorage {
             mood_scores,
             valence,
             arousal,
+            metadata_hash,
         })
     }
 

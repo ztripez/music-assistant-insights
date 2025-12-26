@@ -352,6 +352,9 @@ pub struct EmbedTextAndStoreMetadata {
     /// Genre tags
     #[serde(default)]
     pub genres: Vec<String>,
+    /// Hash of metadata for change detection
+    #[serde(default)]
+    pub metadata_hash: Option<String>,
 }
 
 /// Response from combined embed + store operation
