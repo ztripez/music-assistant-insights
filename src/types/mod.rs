@@ -201,10 +201,11 @@ pub struct SystemStatus {
 // ============================================================================
 
 /// Type of taste profile
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(tag = "type", content = "value")]
 pub enum ProfileType {
     /// Global profile across all listening
+    #[default]
     Global,
     /// Mood-based profile (energetic, peaceful, aggressive, melancholic)
     Mood(String),

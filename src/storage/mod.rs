@@ -45,6 +45,20 @@ pub enum StorageError {
     LockPoisoned(String),
 }
 
+impl From<StorageError> for crate::error::AppError {
+    fn from(err: StorageError) -> Self {
+        match err {
+            StorageError::PointNotFound(msg) | StorageError::CollectionNotFound(msg) => {
+                crate::error::AppError::NotFound(msg)
+            }
+            StorageError::InvalidDimension { expected, got } => crate::error::AppError::BadRequest(
+                format!("Invalid embedding dimension: expected {}, got {}", expected, got),
+            ),
+            _ => crate::error::AppError::Internal(err.to_string()),
+        }
+    }
+}
+
 /// Expected embedding dimension for CLAP models
 pub const EMBEDDING_DIM: usize = 512;
 

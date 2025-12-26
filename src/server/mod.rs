@@ -7,6 +7,7 @@ mod mood;
 mod routes;
 #[cfg(feature = "inference")]
 mod stream;
+mod taste;
 mod tracks;
 #[cfg(feature = "watcher")]
 mod watcher;
@@ -219,7 +220,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/tracks/batch-embed-text", post(tracks::batch_embed_text))
         // Mood classification endpoints
         .route("/mood/classify", post(mood::classify_mood))
-        .route("/mood/list", get(mood::list_moods));
+        .route("/mood/list", get(mood::list_moods))
+        // Taste profile endpoints
+        .route("/users/:user_id/profile/compute", post(taste::compute_profile))
+        .route("/users/:user_id/recommend", post(taste::get_recommendations))
+        .route("/users/:user_id/profile/vector", get(taste::get_taste_vector))
+        .route("/users/:user_id/profile", delete(taste::delete_profile))
+        .route("/users/:user_id/profiles", delete(taste::delete_all_profiles));
 
     // Streaming ingestion endpoints (when inference feature is enabled)
     #[cfg(feature = "inference")]
