@@ -14,7 +14,7 @@ use crate::types::{
 #[cfg(all(feature = "inference", feature = "storage"))]
 use crate::types::{
     BatchEmbedTextRequest, BatchEmbedTextResponse, BatchEmbedTextResult, EmbedTextAndStoreRequest,
-    EmbedTextAndStoreResponse,
+    EmbedTextAndStoreResponse, TextSearchRequest,
 };
 
 #[cfg(feature = "storage")]
@@ -36,8 +36,74 @@ use crate::inference::{format_track_metadata, TextTrackMetadata};
 #[cfg(all(feature = "inference", feature = "storage"))]
 use crate::storage::TrackMetadata;
 
+#[cfg(all(feature = "inference", feature = "storage"))]
+use crate::mood::MoodTier;
+
 #[cfg(feature = "storage")]
 use tracing::{debug, error, info};
+
+#[cfg(feature = "storage")]
+use std::collections::HashMap;
+
+/// Audio embedding score boost factor (audio matches are more reliable)
+#[cfg(feature = "storage")]
+const AUDIO_SCORE_BOOST: f32 = 1.15;
+
+/// Search both text and audio collections and merge results.
+/// Audio results get a score boost since they're more reliable.
+/// Results are deduplicated by track_id, keeping the highest score.
+#[cfg(feature = "storage")]
+async fn merged_search(
+    storage: &std::sync::Arc<super::BoxedStorage>,
+    embedding: &[f32],
+    limit: usize,
+    filter: Option<crate::storage::SearchFilter>,
+) -> Result<Vec<crate::storage::SearchResult>, crate::error::AppError> {
+    use crate::storage::SearchResult;
+
+    // Search both collections in parallel
+    let text_filter = filter.clone();
+    let audio_filter = filter;
+
+    let (text_results, audio_results) = tokio::join!(
+        storage.search(TEXT_COLLECTION, embedding, limit * 2, text_filter),
+        storage.search(AUDIO_COLLECTION, embedding, limit * 2, audio_filter)
+    );
+
+    // Merge results into a HashMap by track_id
+    let mut merged: HashMap<String, SearchResult> = HashMap::new();
+
+    // Add text results
+    if let Ok(results) = text_results {
+        for result in results {
+            merged.insert(result.track_id.clone(), result);
+        }
+    }
+
+    // Add audio results with score boost (overwrite if higher score)
+    if let Ok(results) = audio_results {
+        for mut result in results {
+            // Apply audio score boost
+            result.score = (result.score * AUDIO_SCORE_BOOST).min(1.0);
+
+            // Keep result with higher score
+            if let Some(existing) = merged.get(&result.track_id) {
+                if result.score > existing.score {
+                    merged.insert(result.track_id.clone(), result);
+                }
+            } else {
+                merged.insert(result.track_id.clone(), result);
+            }
+        }
+    }
+
+    // Sort by score descending and take limit
+    let mut results: Vec<SearchResult> = merged.into_values().collect();
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.truncate(limit);
+
+    Ok(results)
+}
 
 /// POST /api/v1/tracks/upsert
 ///
@@ -165,6 +231,54 @@ pub async fn search(
         })?;
 
     let count = results.len();
+
+    Ok(MsgPack(SearchResponse { results, count }))
+}
+
+/// POST /api/v1/tracks/search-text
+///
+/// Search for similar tracks using a text query.
+/// Searches both text and audio collections, with audio results getting a score boost.
+#[cfg(all(feature = "inference", feature = "storage"))]
+pub async fn text_search(
+    State(state): State<AppState>,
+    MsgPackExtractor(req): MsgPackExtractor<TextSearchRequest>,
+) -> Result<MsgPack<SearchResponse>, AppError> {
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("Storage not configured".to_string()))?;
+
+    // Acquire read lock and clone model
+    let model = {
+        let guard = state.model.read().await;
+        guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?
+            .clone()
+    };
+
+    debug!(query = %req.query, "Text search request");
+
+    // Generate embedding from query text
+    let query_text = req.query.clone();
+    let embedding = tokio::task::spawn_blocking(move || model.text_embedding(&query_text))
+        .await
+        .map_err(|e| AppError::Internal(format!("Task join error: {}", e)))?
+        .map_err(|e| {
+            error!(error = %e, "Failed to generate query embedding");
+            AppError::from(e)
+        })?;
+
+    let limit = req.limit.min(100);
+    let filter = req.filter.map(Into::into);
+
+    // Search both text and audio collections with merged results
+    let results = merged_search(storage, embedding.data(), limit, filter).await?;
+
+    let count = results.len();
+
+    info!(query = %req.query, count, "Text search completed");
 
     Ok(MsgPack(SearchResponse { results, count }))
 }
@@ -387,6 +501,17 @@ pub async fn embed_text_and_store(
         "Text embedding generated"
     );
 
+    // Classify mood using the embedding
+    let classification = {
+        let classifier_guard = state.mood_classifier.read().await;
+        if let Some(ref classifier) = *classifier_guard {
+            let tiers = &[MoodTier::Primary, MoodTier::Refined];
+            Some(classifier.classify(embedding.data(), tiers, 3, true))
+        } else {
+            None
+        }
+    };
+
     // Build storage metadata
     let mut storage_metadata = TrackMetadata::new(req.track_id.clone(), req.metadata.name)
         .with_artists(req.metadata.artists)
@@ -396,6 +521,30 @@ pub async fn embed_text_and_store(
     }
     if let Some(hash) = req.metadata.metadata_hash {
         storage_metadata.metadata_hash = Some(hash);
+    }
+
+    // Add mood classification to metadata
+    if let Some(ref cls) = classification {
+        if let Some(ref primary) = cls.primary_mood {
+            storage_metadata.primary_mood = Some(primary.clone());
+        }
+        storage_metadata.moods = Some(cls.moods.iter().map(|m| m.mood.clone()).collect());
+        storage_metadata.mood_scores = Some(
+            cls.moods
+                .iter()
+                .map(|m| (m.mood.clone(), m.confidence))
+                .collect(),
+        );
+        storage_metadata.valence = cls.valence;
+        storage_metadata.arousal = cls.arousal;
+
+        debug!(
+            track_id = %req.track_id,
+            primary_mood = ?cls.primary_mood,
+            valence = ?cls.valence,
+            arousal = ?cls.arousal,
+            "Mood classification complete"
+        );
     }
 
     // Store the embedding

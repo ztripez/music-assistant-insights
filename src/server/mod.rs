@@ -27,6 +27,9 @@ use crate::config::AppConfig;
 #[cfg(feature = "inference")]
 use crate::inference::{ClapModel, DownloadManager};
 
+#[cfg(feature = "inference")]
+use crate::mood::MoodClassifier;
+
 #[cfg(any(feature = "storage", feature = "storage-file"))]
 use crate::storage::VectorStorage;
 
@@ -60,6 +63,9 @@ pub struct AppState {
     /// Streaming session manager
     #[cfg(feature = "inference")]
     pub stream_manager: SharedStreamManager,
+    /// Mood classifier (cached prompt embeddings)
+    #[cfg(feature = "inference")]
+    pub mood_classifier: Arc<RwLock<Option<MoodClassifier>>>,
     /// Server start time for uptime calculation
     pub started_at: Instant,
 }
@@ -80,6 +86,8 @@ impl AppState {
             watcher: Arc::new(RwLock::new(None)),
             #[cfg(feature = "inference")]
             stream_manager: Arc::new(StreamSessionManager::new()),
+            #[cfg(feature = "inference")]
+            mood_classifier: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -87,6 +95,8 @@ impl AppState {
     /// Create AppState with a loaded model
     #[cfg(feature = "inference")]
     pub fn with_model(config: AppConfig, model: ClapModel, model_id: String) -> Self {
+        // Pre-compute mood classifier embeddings
+        let classifier = MoodClassifier::new(&model);
         Self {
             config: Arc::new(config),
             model: Arc::new(RwLock::new(Some(Arc::new(model)))),
@@ -97,6 +107,7 @@ impl AppState {
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
             stream_manager: Arc::new(StreamSessionManager::new()),
+            mood_classifier: Arc::new(RwLock::new(Some(classifier))),
             started_at: Instant::now(),
         }
     }
@@ -117,6 +128,8 @@ impl AppState {
             watcher: Arc::new(RwLock::new(None)),
             #[cfg(feature = "inference")]
             stream_manager: Arc::new(StreamSessionManager::new()),
+            #[cfg(feature = "inference")]
+            mood_classifier: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -132,6 +145,8 @@ impl AppState {
         model_id: String,
         storage: BoxedStorage,
     ) -> Self {
+        // Pre-compute mood classifier embeddings
+        let classifier = MoodClassifier::new(&model);
         Self {
             config: Arc::new(config),
             model: Arc::new(RwLock::new(Some(Arc::new(model)))),
@@ -141,6 +156,7 @@ impl AppState {
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
             stream_manager: Arc::new(StreamSessionManager::new()),
+            mood_classifier: Arc::new(RwLock::new(Some(classifier))),
             started_at: Instant::now(),
         }
     }
@@ -158,13 +174,18 @@ impl AppState {
         model: ClapModel,
         model_id: String,
     ) -> Result<(), crate::error::AppError> {
-        // Take write lock to swap the model
+        // Pre-compute mood classifier embeddings for the new model
+        let classifier = MoodClassifier::new(&model);
+
+        // Take write locks to swap model and classifier
         let mut model_guard = self.model.write().await;
         let mut id_guard = self.current_model_id.write().await;
+        let mut classifier_guard = self.mood_classifier.write().await;
 
-        // Drop old model and set new one
+        // Drop old model/classifier and set new ones
         *model_guard = Some(Arc::new(model));
         *id_guard = Some(model_id);
+        *classifier_guard = Some(classifier);
 
         Ok(())
     }
@@ -174,8 +195,10 @@ impl AppState {
     pub async fn unload_model(&self) {
         let mut model_guard = self.model.write().await;
         let mut id_guard = self.current_model_id.write().await;
+        let mut classifier_guard = self.mood_classifier.write().await;
         *model_guard = None;
         *id_guard = None;
+        *classifier_guard = None;
     }
 
     /// Get the current model ID if a model is loaded
@@ -210,6 +233,7 @@ pub fn create_router(state: AppState) -> Router {
         // Track storage endpoints
         .route("/tracks/upsert", post(tracks::upsert))
         .route("/tracks/search", post(tracks::search))
+        .route("/tracks/search-text", post(tracks::text_search))
         .route("/tracks/embed-text", post(tracks::embed_text_and_store))
         .route(
             "/tracks/:id",

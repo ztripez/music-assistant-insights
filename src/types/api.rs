@@ -106,6 +106,24 @@ pub struct SearchFilterInput {
     /// Exclude specific track IDs
     #[serde(default)]
     pub exclude_ids: Option<Vec<String>>,
+    /// Include tracks with any of these moods
+    #[serde(default)]
+    pub moods: Option<Vec<String>>,
+    /// Exclude tracks with any of these moods
+    #[serde(default)]
+    pub exclude_moods: Option<Vec<String>>,
+    /// Minimum valence (-1.0 to 1.0)
+    #[serde(default)]
+    pub min_valence: Option<f32>,
+    /// Maximum valence (-1.0 to 1.0)
+    #[serde(default)]
+    pub max_valence: Option<f32>,
+    /// Minimum arousal (-1.0 to 1.0)
+    #[serde(default)]
+    pub min_arousal: Option<f32>,
+    /// Maximum arousal (-1.0 to 1.0)
+    #[serde(default)]
+    pub max_arousal: Option<f32>,
 }
 
 #[cfg(feature = "storage")]
@@ -125,9 +143,35 @@ impl From<SearchFilterInput> for SearchFilter {
         if let Some(exclude_ids) = input.exclude_ids {
             filter = filter.exclude(exclude_ids);
         }
+        if let Some(moods) = input.moods {
+            filter = filter.with_moods(moods);
+        }
+        if let Some(exclude_moods) = input.exclude_moods {
+            filter = filter.exclude_moods(exclude_moods);
+        }
+        if input.min_valence.is_some() || input.max_valence.is_some() {
+            filter = filter.with_valence_range(input.min_valence, input.max_valence);
+        }
+        if input.min_arousal.is_some() || input.max_arousal.is_some() {
+            filter = filter.with_arousal_range(input.min_arousal, input.max_arousal);
+        }
 
         filter
     }
+}
+
+/// Request to search for similar tracks using text query
+#[cfg(all(feature = "inference", feature = "storage"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextSearchRequest {
+    /// Text query to search for (will be embedded)
+    pub query: String,
+    /// Maximum number of results (default: 10)
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    /// Optional filter
+    #[serde(default)]
+    pub filter: Option<SearchFilterInput>,
 }
 
 /// Response from search operation
@@ -232,12 +276,21 @@ mod tests {
             genres: Some(vec!["rock".to_string()]),
             album: Some("Album".to_string()),
             exclude_ids: Some(vec!["track_1".to_string()]),
+            moods: Some(vec!["energetic".to_string()]),
+            exclude_moods: None,
+            min_valence: Some(0.0),
+            max_valence: None,
+            min_arousal: None,
+            max_arousal: Some(0.5),
         };
 
         let filter: SearchFilter = input.into();
 
         assert!(filter.artists.is_some());
         assert!(filter.genres.is_some());
+        assert!(filter.moods.is_some());
+        assert!(filter.min_valence.is_some());
+        assert!(filter.max_arousal.is_some());
         assert!(filter.album.is_some());
         assert!(filter.exclude_ids.is_some());
     }

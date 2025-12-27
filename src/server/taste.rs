@@ -17,6 +17,64 @@ use super::extractors::MsgPackExtractor;
 use super::routes::MsgPack;
 use super::AppState;
 
+/// Audio embedding score boost factor (audio matches are more reliable)
+const AUDIO_SCORE_BOOST: f32 = 1.15;
+
+/// Search both text and audio collections and merge results.
+/// Audio results get a score boost since they're more reliable.
+/// Results are deduplicated by track_id, keeping the highest score.
+async fn merged_search(
+    storage: &std::sync::Arc<super::BoxedStorage>,
+    embedding: &[f32],
+    limit: usize,
+    filter: Option<SearchFilter>,
+) -> Result<Vec<crate::storage::SearchResult>, crate::error::AppError> {
+    use crate::storage::SearchResult;
+
+    // Search both collections in parallel
+    let text_filter = filter.clone();
+    let audio_filter = filter;
+
+    let (text_results, audio_results) = tokio::join!(
+        storage.search(TEXT_COLLECTION, embedding, limit * 2, text_filter),
+        storage.search(AUDIO_COLLECTION, embedding, limit * 2, audio_filter)
+    );
+
+    // Merge results into a HashMap by track_id
+    let mut merged: HashMap<String, SearchResult> = HashMap::new();
+
+    // Add text results
+    if let Ok(results) = text_results {
+        for result in results {
+            merged.insert(result.track_id.clone(), result);
+        }
+    }
+
+    // Add audio results with score boost (overwrite if higher score)
+    if let Ok(results) = audio_results {
+        for mut result in results {
+            // Apply audio score boost
+            result.score = (result.score * AUDIO_SCORE_BOOST).min(1.0);
+
+            // Keep result with higher score
+            if let Some(existing) = merged.get(&result.track_id) {
+                if result.score > existing.score {
+                    merged.insert(result.track_id.clone(), result);
+                }
+            } else {
+                merged.insert(result.track_id.clone(), result);
+            }
+        }
+    }
+
+    // Sort by score descending and take limit
+    let mut results: Vec<SearchResult> = merged.into_values().collect();
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.truncate(limit);
+
+    Ok(results)
+}
+
 /// Compute taste profile from user interactions
 ///
 /// POST /api/v1/users/:user_id/profile/compute
@@ -134,15 +192,8 @@ pub async fn get_recommendations(
         f
     });
 
-    // Search for similar tracks using the taste vector
-    let results: Vec<crate::storage::SearchResult> = storage
-        .search(
-            AUDIO_COLLECTION,
-            &profile.embedding,
-            req.limit,
-            filter,
-        )
-        .await?;
+    // Search both text and audio collections with merged results
+    let results = merged_search(storage, &profile.embedding, req.limit, filter).await?;
 
     // Convert to RecommendedTrack
     let tracks = results
