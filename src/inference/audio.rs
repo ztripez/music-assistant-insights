@@ -268,33 +268,35 @@ pub fn compute_mel_spectrogram(
         ));
     }
 
-    // Apply mel filterbank to each power spectrum frame
+    // Apply mel filterbank to power spectrogram using matrix multiplication
+    // mel_filterbank: [n_mels, n_freqs] @ power_spectrogram: [n_freqs, time_frames]
+    // Result: mel_spec: [n_mels, time_frames]
     let n_freqs = CLAP_N_FFT / 2 + 1;
     let time_frames = power_frames.len();
 
-    // Build mel spectrogram: [n_mels, time_frames]
-    // Use checked arithmetic to prevent overflow on extremely long audio
-    let mel_spec_size = CLAP_N_MELS
-        .checked_mul(time_frames)
-        .ok_or_else(|| InferenceError::AudioProcessing("Mel spectrogram size overflow".to_string()))?;
-    let mut mel_spec_raw = vec![0.0f32; mel_spec_size];
-
-    for (t, power_frame) in power_frames.iter().enumerate() {
+    // Build power spectrogram matrix [n_freqs, time_frames] from power frames
+    // Each power_frame has n_freqs elements, we stack them as columns
+    let mut power_data = Vec::with_capacity(n_freqs * time_frames);
+    for power_frame in &power_frames {
         let frame_len = power_frame.len().min(n_freqs);
-
-        for m in 0..CLAP_N_MELS {
-            let mut sum = 0.0f32;
-            for f in 0..frame_len {
-                sum += mel_filterbank[[m, f]] * power_frame[f];
-            }
-            // Apply log scaling. Index calculation uses checked arithmetic for safety.
-            let idx = m
-                .checked_mul(time_frames)
-                .and_then(|v| v.checked_add(t))
-                .ok_or_else(|| InferenceError::AudioProcessing("Mel spectrogram index overflow".to_string()))?;
-            mel_spec_raw[idx] = (sum + 1e-10).ln();
-        }
+        power_data.extend_from_slice(&power_frame[..frame_len]);
+        // Pad with zeros if frame is shorter than expected
+        power_data.resize(power_data.len() + (n_freqs - frame_len), 0.0);
     }
+    // Reshape to [time_frames, n_freqs] then transpose to [n_freqs, time_frames]
+    let power_spec = ndarray::Array2::from_shape_vec((time_frames, n_freqs), power_data)
+        .map_err(|e| InferenceError::AudioProcessing(format!("Power spectrogram reshape failed: {e}")))?
+        .t()
+        .to_owned();
+
+    // Matrix multiply: [n_mels, n_freqs] @ [n_freqs, time_frames] = [n_mels, time_frames]
+    let mel_spec = mel_filterbank.dot(&power_spec);
+
+    // Apply log scaling and flatten to row-major order
+    let mel_spec_raw: Vec<f32> = mel_spec
+        .iter()
+        .map(|&x| (x + 1e-10).ln())
+        .collect();
 
     // Resize to [CLAP_SPEC_SIZE, CLAP_N_MELS] for CLAP model
     let resized = resize_mel_spectrogram(&mel_spec_raw, CLAP_N_MELS, time_frames, CLAP_SPEC_SIZE);
