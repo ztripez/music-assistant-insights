@@ -218,16 +218,29 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
     // Load model first
     let model_id = config.model.name.clone();
     let model = load_model(&config).await;
+    let has_model = model.is_some();
 
     // Then connect to storage
     let storage = connect_storage(&config).await;
 
-    match (model, storage) {
+    let state = match (model, storage) {
         (Some(m), Some(s)) => server::AppState::with_model_and_storage(config, m, model_id, s),
         (Some(m), None) => server::AppState::with_model(config, m, model_id),
         (None, Some(s)) => server::AppState::with_storage(config, s),
         (None, None) => server::AppState::new(config),
+    };
+
+    // Initialize mood classifier in a blocking task (if model was loaded)
+    if has_model {
+        info!("Initializing mood classifier...");
+        if let Err(e) = state.init_classifier().await {
+            error!("Failed to initialize mood classifier: {e}");
+        } else {
+            info!("Mood classifier initialized");
+        }
     }
+
+    state
 }
 
 #[cfg(all(
@@ -390,7 +403,15 @@ async fn create_app_state(config: AppConfig) -> server::AppState {
             {
                 Ok(Ok(model)) => {
                     info!(device = %model.device(), "CLAP model loaded successfully");
-                    server::AppState::with_model(config, model, model_id)
+                    let state = server::AppState::with_model(config, model, model_id);
+                    // Initialize mood classifier in a blocking task
+                    info!("Initializing mood classifier...");
+                    if let Err(e) = state.init_classifier().await {
+                        error!("Failed to initialize mood classifier: {e}");
+                    } else {
+                        info!("Mood classifier initialized");
+                    }
+                    state
                 }
                 Ok(Err(e)) => {
                     error!("Failed to load model: {e}");

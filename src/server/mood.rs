@@ -11,9 +11,6 @@ use super::extractors::MsgPackExtractor;
 use super::routes::MsgPack;
 use super::AppState;
 
-#[cfg(feature = "inference")]
-use crate::mood::MoodClassifier;
-
 /// POST /api/v1/mood/classify
 ///
 /// Classify the mood of audio from an embedding or track ID.
@@ -56,14 +53,11 @@ pub async fn classify_mood(
         ));
     };
 
-    // Get or create mood classifier
-    let model_guard = state.model.read().await;
-    let model = model_guard
+    // Get the cached mood classifier
+    let classifier_guard = state.mood_classifier.read().await;
+    let classifier = classifier_guard
         .as_ref()
-        .ok_or_else(|| AppError::Internal("Model not loaded".to_string()))?;
-
-    // Create classifier (TODO: cache this in AppState)
-    let classifier = MoodClassifier::new(model);
+        .ok_or_else(|| AppError::Internal("Mood classifier not initialized".to_string()))?;
 
     // Classify
     let classification = classifier.classify(&embedding, &req.tiers, req.top_k, req.include_va);

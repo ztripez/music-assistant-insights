@@ -273,7 +273,11 @@ pub fn compute_mel_spectrogram(
     let time_frames = power_frames.len();
 
     // Build mel spectrogram: [n_mels, time_frames]
-    let mut mel_spec_raw = vec![0.0f32; CLAP_N_MELS * time_frames];
+    // Use checked arithmetic to prevent overflow on extremely long audio
+    let mel_spec_size = CLAP_N_MELS
+        .checked_mul(time_frames)
+        .ok_or_else(|| InferenceError::AudioProcessing("Mel spectrogram size overflow".to_string()))?;
+    let mut mel_spec_raw = vec![0.0f32; mel_spec_size];
 
     for (t, power_frame) in power_frames.iter().enumerate() {
         let frame_len = power_frame.len().min(n_freqs);
@@ -283,8 +287,12 @@ pub fn compute_mel_spectrogram(
             for f in 0..frame_len {
                 sum += mel_filterbank[[m, f]] * power_frame[f];
             }
-            // Apply log scaling
-            mel_spec_raw[m * time_frames + t] = (sum + 1e-10).ln();
+            // Apply log scaling. Index calculation uses checked arithmetic for safety.
+            let idx = m
+                .checked_mul(time_frames)
+                .and_then(|v| v.checked_add(t))
+                .ok_or_else(|| InferenceError::AudioProcessing("Mel spectrogram index overflow".to_string()))?;
+            mel_spec_raw[idx] = (sum + 1e-10).ln();
         }
     }
 

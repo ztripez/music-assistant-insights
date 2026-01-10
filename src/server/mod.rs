@@ -92,11 +92,10 @@ impl AppState {
         }
     }
 
-    /// Create AppState with a loaded model
+    /// Create AppState with a loaded model.
+    /// Note: Call `init_classifier()` after construction to initialize mood classification.
     #[cfg(feature = "inference")]
     pub fn with_model(config: AppConfig, model: ClapModel, model_id: String) -> Self {
-        // Pre-compute mood classifier embeddings
-        let classifier = MoodClassifier::new(&model);
         Self {
             config: Arc::new(config),
             model: Arc::new(RwLock::new(Some(Arc::new(model)))),
@@ -107,7 +106,7 @@ impl AppState {
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
             stream_manager: Arc::new(StreamSessionManager::new()),
-            mood_classifier: Arc::new(RwLock::new(Some(classifier))),
+            mood_classifier: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -134,7 +133,8 @@ impl AppState {
         }
     }
 
-    /// Create AppState with both model and storage
+    /// Create AppState with both model and storage.
+    /// Note: Call `init_classifier()` after construction to initialize mood classification.
     #[cfg(all(
         feature = "inference",
         any(feature = "storage", feature = "storage-file")
@@ -145,8 +145,6 @@ impl AppState {
         model_id: String,
         storage: BoxedStorage,
     ) -> Self {
-        // Pre-compute mood classifier embeddings
-        let classifier = MoodClassifier::new(&model);
         Self {
             config: Arc::new(config),
             model: Arc::new(RwLock::new(Some(Arc::new(model)))),
@@ -156,7 +154,7 @@ impl AppState {
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
             stream_manager: Arc::new(StreamSessionManager::new()),
-            mood_classifier: Arc::new(RwLock::new(Some(classifier))),
+            mood_classifier: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
         }
     }
@@ -167,15 +165,24 @@ impl AppState {
         self.model.read().await.is_some()
     }
 
-    /// Load a new model, replacing any existing one
+    /// Load a new model, replacing any existing one.
+    /// Mood classifier initialization is done in a blocking task to avoid blocking the async runtime.
     #[cfg(feature = "inference")]
     pub async fn load_model(
         &self,
         model: ClapModel,
         model_id: String,
     ) -> Result<(), crate::error::AppError> {
-        // Pre-compute mood classifier embeddings for the new model
-        let classifier = MoodClassifier::new(&model);
+        // Wrap model in Arc first so we can share it
+        let model = Arc::new(model);
+
+        // Pre-compute mood classifier embeddings in a blocking task
+        let model_for_classifier = model.clone();
+        let classifier = tokio::task::spawn_blocking(move || {
+            MoodClassifier::new(&model_for_classifier)
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Internal(format!("Join error: {}", e)))?;
 
         // Take write locks to swap model and classifier
         let mut model_guard = self.model.write().await;
@@ -183,8 +190,33 @@ impl AppState {
         let mut classifier_guard = self.mood_classifier.write().await;
 
         // Drop old model/classifier and set new ones
-        *model_guard = Some(Arc::new(model));
+        *model_guard = Some(model);
         *id_guard = Some(model_id);
+        *classifier_guard = Some(classifier);
+
+        Ok(())
+    }
+
+    /// Initialize the mood classifier from the currently loaded model.
+    /// This should be called after constructing AppState with `with_model` or `with_model_and_storage`.
+    /// Runs in a blocking task to avoid blocking the async runtime.
+    #[cfg(feature = "inference")]
+    pub async fn init_classifier(&self) -> Result<(), crate::error::AppError> {
+        // Get the current model
+        let model_guard = self.model.read().await;
+        let model = model_guard
+            .as_ref()
+            .ok_or_else(|| crate::error::AppError::Internal("No model loaded".to_string()))?
+            .clone();
+        drop(model_guard);
+
+        // Pre-compute mood classifier embeddings in a blocking task
+        let classifier = tokio::task::spawn_blocking(move || MoodClassifier::new(&model))
+            .await
+            .map_err(|e| crate::error::AppError::Internal(format!("Join error: {}", e)))?;
+
+        // Store the classifier
+        let mut classifier_guard = self.mood_classifier.write().await;
         *classifier_guard = Some(classifier);
 
         Ok(())
