@@ -1,6 +1,7 @@
 //! CLAP model wrapper for ONNX Runtime inference.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -12,6 +13,9 @@ use super::{AudioData, AudioProcessor, Embedding, InferenceError, MelFeatures, M
 
 /// Maximum sequence length for CLAP text models
 const MAX_SEQ_LENGTH: usize = 77;
+
+/// Number of sessions in the pool for concurrent inference
+const SESSION_POOL_SIZE: usize = 4;
 
 /// Device type for inference
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,10 +86,40 @@ impl DeviceConfig {
     }
 }
 
+/// Pool of ONNX sessions for concurrent inference
+struct SessionPool {
+    sessions: Vec<Mutex<Session>>,
+    next: AtomicUsize,
+}
+
+impl SessionPool {
+    /// Create a new session pool with the given sessions
+    fn new(sessions: Vec<Session>) -> Self {
+        Self {
+            sessions: sessions.into_iter().map(Mutex::new).collect(),
+            next: AtomicUsize::new(0),
+        }
+    }
+
+    /// Get the next available session from the pool (round-robin)
+    fn get(&self) -> &Mutex<Session> {
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.sessions.len();
+        &self.sessions[idx]
+    }
+
+    /// Get the number of sessions in the pool
+    fn len(&self) -> usize {
+        self.sessions.len()
+    }
+}
+
 /// CLAP model for generating text and audio embeddings
+///
+/// Uses session pools for concurrent inference - multiple requests can be
+/// processed simultaneously using round-robin session allocation.
 pub struct ClapModel {
-    text_session: Mutex<Session>,
-    audio_session: Mutex<Session>,
+    text_sessions: SessionPool,
+    audio_sessions: SessionPool,
     audio_processor: Mutex<AudioProcessor>,
     tokenizer: Option<Tokenizer>,
     device: Device,
@@ -97,6 +131,8 @@ impl std::fmt::Debug for ClapModel {
             .field("device", &self.device)
             .field("embedding_dim", &EMBEDDING_DIM)
             .field("has_tokenizer", &self.tokenizer.is_some())
+            .field("text_session_pool_size", &self.text_sessions.len())
+            .field("audio_session_pool_size", &self.audio_sessions.len())
             .finish()
     }
 }
@@ -114,21 +150,38 @@ impl ClapModel {
     ) -> Result<Self, InferenceError> {
         let device = device_config.selected_device();
 
-        info!(?device, "Loading CLAP model");
+        info!(?device, pool_size = SESSION_POOL_SIZE, "Loading CLAP model with session pool");
 
-        let text_session = Self::create_session(&paths.text_model, &device_config)?;
-        let audio_session = Self::create_session(&paths.audio_model, &device_config)?;
+        // Create session pools for concurrent inference
+        let mut text_sessions = Vec::with_capacity(SESSION_POOL_SIZE);
+        let mut audio_sessions = Vec::with_capacity(SESSION_POOL_SIZE);
 
-        // Log model info
-        debug!(
-            text_inputs = ?text_session.inputs.iter().map(|i| &i.name).collect::<Vec<_>>(),
-            text_outputs = ?text_session.outputs.iter().map(|o| &o.name).collect::<Vec<_>>(),
-            "Text model loaded"
-        );
-        debug!(
-            audio_inputs = ?audio_session.inputs.iter().map(|i| &i.name).collect::<Vec<_>>(),
-            audio_outputs = ?audio_session.outputs.iter().map(|o| &o.name).collect::<Vec<_>>(),
-            "Audio model loaded"
+        for i in 0..SESSION_POOL_SIZE {
+            let text_session = Self::create_session(&paths.text_model, &device_config)?;
+            let audio_session = Self::create_session(&paths.audio_model, &device_config)?;
+
+            // Log model info only for first session
+            if i == 0 {
+                debug!(
+                    text_inputs = ?text_session.inputs.iter().map(|i| &i.name).collect::<Vec<_>>(),
+                    text_outputs = ?text_session.outputs.iter().map(|o| &o.name).collect::<Vec<_>>(),
+                    "Text model loaded"
+                );
+                debug!(
+                    audio_inputs = ?audio_session.inputs.iter().map(|i| &i.name).collect::<Vec<_>>(),
+                    audio_outputs = ?audio_session.outputs.iter().map(|o| &o.name).collect::<Vec<_>>(),
+                    "Audio model loaded"
+                );
+            }
+
+            text_sessions.push(text_session);
+            audio_sessions.push(audio_session);
+        }
+
+        info!(
+            text_pool_size = text_sessions.len(),
+            audio_pool_size = audio_sessions.len(),
+            "Session pools created"
         );
 
         // Load tokenizer if available
@@ -151,8 +204,8 @@ impl ClapModel {
         let audio_processor = AudioProcessor::new(48_000, 10.0, 10.0);
 
         Ok(Self {
-            text_session: Mutex::new(text_session),
-            audio_session: Mutex::new(audio_session),
+            text_sessions: SessionPool::new(text_sessions),
+            audio_sessions: SessionPool::new(audio_sessions),
             audio_processor: Mutex::new(audio_processor),
             tokenizer,
             device,
@@ -336,9 +389,10 @@ impl ClapModel {
         ))
         .map_err(|e| InferenceError::Onnx(e.to_string()))?;
 
-        // Lock session for inference
+        // Get session from pool (round-robin for concurrent access)
         let mut session = self
-            .text_session
+            .text_sessions
+            .get()
             .lock()
             .map_err(|e| InferenceError::Onnx(format!("Session lock error: {e}")))?;
 
@@ -478,9 +532,10 @@ impl ClapModel {
             "Audio model input tensor"
         );
 
-        // Lock session for inference
+        // Get session from pool (round-robin for concurrent access)
         let mut session = self
-            .audio_session
+            .audio_sessions
+            .get()
             .lock()
             .map_err(|e| InferenceError::Onnx(format!("Session lock error: {e}")))?;
 
