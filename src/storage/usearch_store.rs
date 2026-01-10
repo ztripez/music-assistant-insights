@@ -862,3 +862,669 @@ impl VectorStorage for UsearchStorage {
         self.persist_taste_profiles()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a temporary storage instance for testing
+    fn create_test_storage() -> (UsearchStorage, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let storage =
+            UsearchStorage::new(temp_dir.path().to_path_buf()).expect("Failed to create storage");
+        (storage, temp_dir)
+    }
+
+    /// Create a test embedding vector
+    fn test_embedding(seed: f32) -> Vec<f32> {
+        (0..EMBEDDING_DIM).map(|i| (i as f32 * seed) % 1.0).collect()
+    }
+
+    /// Create test metadata
+    fn test_metadata(track_id: &str) -> TrackMetadata {
+        TrackMetadata::new(track_id, format!("Test Track {}", track_id))
+            .with_artists(vec!["Test Artist".to_string()])
+            .with_album("Test Album")
+            .with_genres(vec!["rock".to_string(), "indie".to_string()])
+    }
+
+    #[tokio::test]
+    async fn test_store_and_retrieve() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        let track_id = "test-track-1";
+        let embedding = test_embedding(0.1);
+        let metadata = test_metadata(track_id);
+
+        // Store embedding
+        storage
+            .upsert(TEXT_COLLECTION, track_id, &embedding, metadata.clone())
+            .await
+            .expect("Failed to upsert");
+
+        // Retrieve embedding
+        let result = storage
+            .get(TEXT_COLLECTION, track_id)
+            .await
+            .expect("Failed to get");
+
+        assert!(result.is_some());
+        let stored = result.unwrap();
+        assert_eq!(stored.metadata.track_id, track_id);
+        assert_eq!(stored.metadata.name, format!("Test Track {}", track_id));
+        assert_eq!(stored.embedding.len(), EMBEDDING_DIM);
+
+        // Verify embedding values match (with tolerance for floating point)
+        for (i, (a, b)) in embedding.iter().zip(stored.embedding.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "Embedding mismatch at index {}: {} vs {}",
+                i,
+                a,
+                b
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exists() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        let track_id = "test-exists";
+
+        // Should not exist initially
+        assert!(!storage
+            .exists(TEXT_COLLECTION, track_id)
+            .await
+            .expect("Failed to check exists"));
+
+        // Store embedding
+        storage
+            .upsert(
+                TEXT_COLLECTION,
+                track_id,
+                &test_embedding(0.2),
+                test_metadata(track_id),
+            )
+            .await
+            .expect("Failed to upsert");
+
+        // Should exist now
+        assert!(storage
+            .exists(TEXT_COLLECTION, track_id)
+            .await
+            .expect("Failed to check exists"));
+    }
+
+    #[tokio::test]
+    async fn test_count() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        // Initially empty
+        assert_eq!(
+            storage
+                .count(TEXT_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            0
+        );
+
+        // Add tracks
+        for i in 0..5 {
+            let track_id = format!("track-{}", i);
+            storage
+                .upsert(
+                    TEXT_COLLECTION,
+                    &track_id,
+                    &test_embedding(i as f32 * 0.1),
+                    test_metadata(&track_id),
+                )
+                .await
+                .expect("Failed to upsert");
+        }
+
+        assert_eq!(
+            storage
+                .count(TEXT_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            5
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        let track_id = "test-delete";
+
+        // Store embedding
+        storage
+            .upsert(
+                TEXT_COLLECTION,
+                track_id,
+                &test_embedding(0.3),
+                test_metadata(track_id),
+            )
+            .await
+            .expect("Failed to upsert");
+
+        assert!(storage
+            .exists(TEXT_COLLECTION, track_id)
+            .await
+            .expect("Failed to check exists"));
+
+        // Delete
+        storage
+            .delete(TEXT_COLLECTION, track_id)
+            .await
+            .expect("Failed to delete");
+
+        // Should no longer exist
+        assert!(!storage
+            .exists(TEXT_COLLECTION, track_id)
+            .await
+            .expect("Failed to check exists"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_batch() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        let track_ids: Vec<String> = (0..5).map(|i| format!("batch-{}", i)).collect();
+
+        // Store all tracks
+        for track_id in &track_ids {
+            storage
+                .upsert(
+                    TEXT_COLLECTION,
+                    track_id,
+                    &test_embedding(0.1),
+                    test_metadata(track_id),
+                )
+                .await
+                .expect("Failed to upsert");
+        }
+
+        assert_eq!(
+            storage
+                .count(TEXT_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            5
+        );
+
+        // Delete batch (first 3)
+        storage
+            .delete_batch(TEXT_COLLECTION, &track_ids[0..3].to_vec())
+            .await
+            .expect("Failed to delete batch");
+
+        // Should have 2 remaining
+        assert_eq!(
+            storage
+                .count(TEXT_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upsert_updates_existing() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        let track_id = "test-update";
+
+        // Initial upsert
+        let metadata1 = TrackMetadata::new(track_id, "Original Name");
+        storage
+            .upsert(TEXT_COLLECTION, track_id, &test_embedding(0.1), metadata1)
+            .await
+            .expect("Failed to upsert");
+
+        // Update with new metadata
+        let metadata2 = TrackMetadata::new(track_id, "Updated Name");
+        storage
+            .upsert(TEXT_COLLECTION, track_id, &test_embedding(0.2), metadata2)
+            .await
+            .expect("Failed to upsert");
+
+        // Should still be count 1
+        assert_eq!(
+            storage
+                .count(TEXT_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            1
+        );
+
+        // Should have updated metadata
+        let result = storage
+            .get(TEXT_COLLECTION, track_id)
+            .await
+            .expect("Failed to get");
+        assert_eq!(result.unwrap().metadata.name, "Updated Name");
+    }
+
+    #[tokio::test]
+    async fn test_search_returns_similar() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        // Store some tracks with different embeddings
+        for i in 0..10 {
+            let track_id = format!("search-{}", i);
+            // Create embeddings with increasing values
+            let embedding: Vec<f32> = (0..EMBEDDING_DIM).map(|j| (i * 10 + j) as f32 / 100.0).collect();
+            storage
+                .upsert(TEXT_COLLECTION, &track_id, &embedding, test_metadata(&track_id))
+                .await
+                .expect("Failed to upsert");
+        }
+
+        // Search with a query similar to search-5
+        let query: Vec<f32> = (0..EMBEDDING_DIM).map(|j| (5 * 10 + j) as f32 / 100.0).collect();
+
+        let results = storage
+            .search(TEXT_COLLECTION, &query, 3, None)
+            .await
+            .expect("Failed to search");
+
+        assert_eq!(results.len(), 3);
+        // First result should be search-5 (exact match)
+        assert_eq!(results[0].track_id, "search-5");
+        assert!(results[0].score > 0.99); // Should be very high similarity
+    }
+
+    #[tokio::test]
+    async fn test_search_with_filter() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        // Store tracks with different genres
+        for i in 0..5 {
+            let track_id = format!("filter-{}", i);
+            let metadata = TrackMetadata::new(&track_id, &track_id)
+                .with_genres(vec![if i % 2 == 0 { "rock" } else { "jazz" }.to_string()]);
+            storage
+                .upsert(TEXT_COLLECTION, &track_id, &test_embedding(0.1), metadata)
+                .await
+                .expect("Failed to upsert");
+        }
+
+        // Search with genre filter
+        let filter = SearchFilter::new().with_genres(vec!["rock".to_string()]);
+        let results = storage
+            .search(TEXT_COLLECTION, &test_embedding(0.1), 10, Some(filter))
+            .await
+            .expect("Failed to search");
+
+        // Should only return rock tracks (filter-0, filter-2, filter-4)
+        assert_eq!(results.len(), 3);
+        for result in results {
+            assert!(result.metadata.genres.contains(&"rock".to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_exclude() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        // Store tracks
+        for i in 0..5 {
+            let track_id = format!("exclude-{}", i);
+            storage
+                .upsert(
+                    TEXT_COLLECTION,
+                    &track_id,
+                    &test_embedding(0.1),
+                    test_metadata(&track_id),
+                )
+                .await
+                .expect("Failed to upsert");
+        }
+
+        // Search excluding some tracks
+        let filter =
+            SearchFilter::new().exclude(vec!["exclude-0".to_string(), "exclude-1".to_string()]);
+        let results = storage
+            .search(TEXT_COLLECTION, &test_embedding(0.1), 10, Some(filter))
+            .await
+            .expect("Failed to search");
+
+        // Should only return 3 tracks
+        assert_eq!(results.len(), 3);
+        for result in results {
+            assert!(!result.track_id.ends_with("-0") && !result.track_id.ends_with("-1"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upsert_batch() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        let items: Vec<(String, Vec<f32>, TrackMetadata)> = (0..10)
+            .map(|i| {
+                let track_id = format!("batch-upsert-{}", i);
+                (
+                    track_id.clone(),
+                    test_embedding(i as f32 * 0.1),
+                    test_metadata(&track_id),
+                )
+            })
+            .collect();
+
+        storage
+            .upsert_batch(TEXT_COLLECTION, items)
+            .await
+            .expect("Failed to batch upsert");
+
+        assert_eq!(
+            storage
+                .count(TEXT_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            10
+        );
+    }
+
+    #[tokio::test]
+    async fn test_audio_collection() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        let track_id = "audio-test";
+
+        // Store in audio collection
+        storage
+            .upsert(
+                AUDIO_COLLECTION,
+                track_id,
+                &test_embedding(0.5),
+                test_metadata(track_id),
+            )
+            .await
+            .expect("Failed to upsert");
+
+        // Should exist in audio but not in text
+        assert!(storage
+            .exists(AUDIO_COLLECTION, track_id)
+            .await
+            .expect("Failed to check exists"));
+        assert!(!storage
+            .exists(TEXT_COLLECTION, track_id)
+            .await
+            .expect("Failed to check exists"));
+
+        assert_eq!(
+            storage
+                .count(AUDIO_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            1
+        );
+        assert_eq!(
+            storage
+                .count(TEXT_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_taste_profile_crud() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        let profile = crate::types::TasteProfile {
+            user_id: "user-1".to_string(),
+            profile_type: crate::types::ProfileType::Global,
+            embedding: test_embedding(0.7),
+            track_count: 50,
+            confidence: 0.85,
+            updated_at: 1234567890,
+        };
+
+        // Store profile
+        storage
+            .store_taste_profile(profile.clone())
+            .await
+            .expect("Failed to store profile");
+
+        // Retrieve profile
+        let retrieved = storage
+            .get_taste_profile("user-1", &crate::types::ProfileType::Global)
+            .await
+            .expect("Failed to get profile");
+
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.user_id, "user-1");
+        assert_eq!(retrieved.track_count, 50);
+        assert!((retrieved.confidence - 0.85).abs() < 0.001);
+
+        // Delete profile
+        storage
+            .delete_taste_profile("user-1", &crate::types::ProfileType::Global)
+            .await
+            .expect("Failed to delete profile");
+
+        let retrieved = storage
+            .get_taste_profile("user-1", &crate::types::ProfileType::Global)
+            .await
+            .expect("Failed to get profile");
+        assert!(retrieved.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_user_profiles() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        // Store multiple profiles for same user
+        let profile1 = crate::types::TasteProfile {
+            user_id: "user-2".to_string(),
+            profile_type: crate::types::ProfileType::Global,
+            embedding: test_embedding(0.1),
+            track_count: 10,
+            confidence: 0.5,
+            updated_at: 1000,
+        };
+
+        let profile2 = crate::types::TasteProfile {
+            user_id: "user-2".to_string(),
+            profile_type: crate::types::ProfileType::Mood("energetic".to_string()),
+            embedding: test_embedding(0.2),
+            track_count: 5,
+            confidence: 0.3,
+            updated_at: 2000,
+        };
+
+        storage
+            .store_taste_profile(profile1)
+            .await
+            .expect("Failed to store");
+        storage
+            .store_taste_profile(profile2)
+            .await
+            .expect("Failed to store");
+
+        let profiles = storage
+            .list_user_profiles("user-2")
+            .await
+            .expect("Failed to list profiles");
+
+        assert_eq!(profiles.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_delete_user_profiles() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        // Store profiles for multiple users
+        for user_num in 1..=3 {
+            let profile = crate::types::TasteProfile {
+                user_id: format!("user-{}", user_num),
+                profile_type: crate::types::ProfileType::Global,
+                embedding: test_embedding(user_num as f32 * 0.1),
+                track_count: 10,
+                confidence: 0.5,
+                updated_at: 1000,
+            };
+            storage
+                .store_taste_profile(profile)
+                .await
+                .expect("Failed to store");
+        }
+
+        // Delete user-2's profiles
+        storage
+            .delete_user_profiles("user-2")
+            .await
+            .expect("Failed to delete");
+
+        // user-1 and user-3 should still have profiles
+        assert!(storage
+            .get_taste_profile("user-1", &crate::types::ProfileType::Global)
+            .await
+            .expect("Failed to get")
+            .is_some());
+        assert!(storage
+            .get_taste_profile("user-2", &crate::types::ProfileType::Global)
+            .await
+            .expect("Failed to get")
+            .is_none());
+        assert!(storage
+            .get_taste_profile("user-3", &crate::types::ProfileType::Global)
+            .await
+            .expect("Failed to get")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_embedding_dimension() {
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+
+        // Try to store embedding with wrong dimension
+        let wrong_dim_embedding = vec![0.1f32; 256]; // Wrong dimension
+        let result = storage
+            .upsert(
+                TEXT_COLLECTION,
+                "test",
+                &wrong_dim_embedding,
+                test_metadata("test"),
+            )
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StorageError::InvalidDimension { expected, got } => {
+                assert_eq!(expected, EMBEDDING_DIM);
+                assert_eq!(got, 256);
+            }
+            _ => panic!("Expected InvalidDimension error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_persistence_files_created() {
+        // Test that persistence files are created after upsert
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let data_path = temp_dir.path().to_path_buf();
+
+        let storage = UsearchStorage::new(data_path.clone()).expect("Failed to create storage");
+        storage.initialize().await.expect("Failed to initialize");
+
+        storage
+            .upsert(
+                TEXT_COLLECTION,
+                "persist-test",
+                &test_embedding(0.42),
+                test_metadata("persist-test"),
+            )
+            .await
+            .expect("Failed to upsert");
+
+        // Verify count is 1
+        let count = storage
+            .count(TEXT_COLLECTION)
+            .await
+            .expect("Failed to count");
+        assert_eq!(count, 1, "Should have 1 track after upsert");
+
+        // Verify data was saved (check files exist)
+        let index_path = data_path.join(format!("{}.usearch", TEXT_COLLECTION));
+        let meta_path = data_path.join(format!("{}.meta.bin", TEXT_COLLECTION));
+        let idmap_path = data_path.join(format!("{}.idmap.bin", TEXT_COLLECTION));
+
+        assert!(
+            index_path.exists(),
+            "Index file should exist after upsert: {:?}",
+            index_path
+        );
+        assert!(
+            meta_path.exists(),
+            "Metadata file should exist after upsert: {:?}",
+            meta_path
+        );
+        assert!(
+            idmap_path.exists(),
+            "ID map file should exist after upsert: {:?}",
+            idmap_path
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_writes() {
+        use std::sync::Arc;
+
+        let (storage, _temp_dir) = create_test_storage();
+        storage.initialize().await.expect("Failed to initialize");
+        let storage = Arc::new(storage);
+
+        // Spawn multiple concurrent write tasks
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let storage = Arc::clone(&storage);
+            let handle = tokio::spawn(async move {
+                let track_id = format!("concurrent-{}", i);
+                storage
+                    .upsert(
+                        TEXT_COLLECTION,
+                        &track_id,
+                        &test_embedding(i as f32 * 0.1),
+                        test_metadata(&track_id),
+                    )
+                    .await
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all writes to complete
+        for handle in handles {
+            handle.await.expect("Task panicked").expect("Upsert failed");
+        }
+
+        // All 10 tracks should be stored
+        assert_eq!(
+            storage
+                .count(TEXT_COLLECTION)
+                .await
+                .expect("Failed to count"),
+            10
+        );
+    }
+}
