@@ -59,31 +59,12 @@ impl Embedding {
 
     /// Compute cosine similarity with another embedding
     pub fn cosine_similarity(&self, other: &Embedding) -> f32 {
-        let dot: f32 = self
-            .data
-            .iter()
-            .zip(other.data.iter())
-            .map(|(a, b)| a * b)
-            .sum();
-
-        let norm_a: f32 = self.data.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = other.data.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        if norm_a == 0.0 || norm_b == 0.0 {
-            0.0
-        } else {
-            dot / (norm_a * norm_b)
-        }
+        crate::math::cosine_similarity(&self.data, &other.data)
     }
 
     /// L2 normalize the embedding in place
     pub fn normalize(&mut self) {
-        let norm: f32 = self.data.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut self.data {
-                *x /= norm;
-            }
-        }
+        crate::math::normalize_in_place(&mut self.data);
     }
 
     /// Return a normalized copy of this embedding

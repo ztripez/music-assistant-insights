@@ -196,23 +196,9 @@ impl MoodClassifier {
     }
 }
 
-/// Compute cosine similarity between two vectors
+// Re-export from shared math module for internal use
 #[cfg(any(feature = "inference", test))]
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-
-    dot / (norm_a * norm_b)
-}
+use crate::math::cosine_similarity;
 
 /// Apply softmax normalization to scores
 #[cfg(feature = "inference")]
@@ -249,48 +235,7 @@ fn softmax_normalize<'a>(scores: &[(f32, &'a MoodPrompt)]) -> Vec<(f32, &'a Mood
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_cosine_similarity() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
-
-        let c = vec![0.0, 1.0, 0.0];
-        assert!(cosine_similarity(&a, &c).abs() < 1e-6);
-
-        let d = vec![-1.0, 0.0, 0.0];
-        assert!((cosine_similarity(&a, &d) + 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_normalized() {
-        let a = vec![0.5, 0.5, 0.5, 0.5];
-        let b = vec![1.0, 1.0, 1.0, 1.0];
-        // Same direction, should be 1.0
-        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_empty() {
-        let a: Vec<f32> = vec![];
-        let b: Vec<f32> = vec![];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
-    }
-
-    #[test]
-    fn test_cosine_similarity_zero_vector() {
-        let a = vec![0.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
-    }
-
-    #[test]
-    fn test_cosine_similarity_different_lengths() {
-        let a = vec![1.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        // Different lengths should return 0
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
-    }
+    // Note: cosine_similarity tests are in crate::math::tests
 
     #[test]
     fn test_mood_tier_display() {

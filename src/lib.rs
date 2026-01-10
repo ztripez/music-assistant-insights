@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 #[cfg(feature = "inference")]
 pub mod inference;
+pub mod math;
 pub mod mood;
 pub mod server;
 pub mod storage;
