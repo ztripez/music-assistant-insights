@@ -2,8 +2,26 @@
 //!
 //! These types are used across the application for request/response handling
 //! and internal data representation.
+//!
+//! # Module Organization
+//!
+//! API types are split into domain-specific modules:
+//! - [`tracks`] - Track upsert, search, delete, and batch operations
+//! - [`embed`] - Direct embedding generation from text and audio
+//! - [`models`] - Model management (list, download, load, delete)
+//! - [`mood`] - Mood classification operations
+//! - [`streaming`] - Real-time audio streaming ingestion
+//! - [`taste`] - Taste profiles and recommendations
+//!
+//! The [`api`] module re-exports all types for backward compatibility.
 
 pub mod api;
+pub mod embed;
+pub mod models;
+pub mod mood;
+pub mod streaming;
+pub mod taste;
+pub mod tracks;
 
 use serde::{Deserialize, Serialize};
 
