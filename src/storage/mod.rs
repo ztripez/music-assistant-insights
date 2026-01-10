@@ -65,6 +65,7 @@ pub const EMBEDDING_DIM: usize = 512;
 /// Collection names for different embedding types
 pub const TEXT_COLLECTION: &str = "tracks_text";
 pub const AUDIO_COLLECTION: &str = "tracks_audio";
+pub const PROFILE_COLLECTION: &str = "taste_profiles";
 
 /// Metadata stored with each embedding
 #[derive(Debug, Clone, Serialize, Deserialize)]

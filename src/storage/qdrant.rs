@@ -14,7 +14,7 @@ use tracing::{debug, info};
 
 use super::{
     SearchFilter, SearchResult, StorageError, StoredEmbedding, TrackMetadata, VectorStorage,
-    AUDIO_COLLECTION, EMBEDDING_DIM, TEXT_COLLECTION,
+    AUDIO_COLLECTION, EMBEDDING_DIM, PROFILE_COLLECTION, TEXT_COLLECTION,
 };
 
 /// Qdrant-based vector storage implementation
@@ -595,7 +595,6 @@ impl VectorStorage for QdrantStorage {
         &self,
         profile: crate::types::TasteProfile,
     ) -> Result<(), StorageError> {
-        const PROFILE_COLLECTION: &str = "taste_profiles";
         self.ensure_collection(PROFILE_COLLECTION).await?;
 
         // Create a unique identifier for this profile
@@ -640,7 +639,6 @@ impl VectorStorage for QdrantStorage {
         user_id: &str,
         profile_type: &crate::types::ProfileType,
     ) -> Result<Option<crate::types::TasteProfile>, StorageError> {
-        const PROFILE_COLLECTION: &str = "taste_profiles";
         let full_name = self.collection_name(PROFILE_COLLECTION);
 
         let exists = self
@@ -746,7 +744,6 @@ impl VectorStorage for QdrantStorage {
         &self,
         user_id: &str,
     ) -> Result<Vec<crate::types::TasteProfile>, StorageError> {
-        const PROFILE_COLLECTION: &str = "taste_profiles";
         let full_name = self.collection_name(PROFILE_COLLECTION);
 
         let exists = self
@@ -846,7 +843,6 @@ impl VectorStorage for QdrantStorage {
         user_id: &str,
         profile_type: &crate::types::ProfileType,
     ) -> Result<(), StorageError> {
-        const PROFILE_COLLECTION: &str = "taste_profiles";
         let full_name = self.collection_name(PROFILE_COLLECTION);
 
         let exists = self
@@ -882,7 +878,6 @@ impl VectorStorage for QdrantStorage {
     }
 
     async fn delete_user_profiles(&self, user_id: &str) -> Result<(), StorageError> {
-        const PROFILE_COLLECTION: &str = "taste_profiles";
         let full_name = self.collection_name(PROFILE_COLLECTION);
 
         let exists = self
