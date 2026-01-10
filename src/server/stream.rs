@@ -1006,6 +1006,33 @@ fn format_metadata_text(metadata: &IngestMetadata) -> String {
 mod tests {
     use super::*;
 
+    fn test_metadata() -> IngestMetadata {
+        IngestMetadata {
+            name: "Test Song".to_string(),
+            artists: vec!["Test Artist".to_string()],
+            album: Some("Test Album".to_string()),
+            genres: vec!["Rock".to_string()],
+        }
+    }
+
+    /// Generate test PCM audio data (sine wave at 440Hz)
+    fn generate_test_audio(sample_rate: u32, duration_s: f32, channels: u8) -> Vec<u8> {
+        let num_samples = (sample_rate as f32 * duration_s) as usize;
+        let mut data = Vec::with_capacity(num_samples * channels as usize * 2);
+
+        for i in 0..num_samples {
+            let t = i as f32 / sample_rate as f32;
+            // 440Hz sine wave at 50% amplitude
+            let sample = (t * 440.0 * 2.0 * std::f32::consts::PI).sin() * 0.5;
+            let sample_i16 = (sample * 32767.0) as i16;
+
+            for _ in 0..channels {
+                data.extend_from_slice(&sample_i16.to_le_bytes());
+            }
+        }
+        data
+    }
+
     #[test]
     fn test_format_metadata_text() {
         let metadata = IngestMetadata {
@@ -1077,5 +1104,329 @@ mod tests {
 
         assert_eq!(samples.len(), 1);
         assert!((samples[0] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_session_lifecycle_frames_buffering() {
+        // Test the session lifecycle: create -> process frames -> verify buffering
+        let mut session = StreamSession::new(
+            "track_lifecycle".to_string(),
+            test_metadata(),
+            AudioFormat::PcmS16Le,
+            48000, // Native rate, no resampling needed
+            1,     // Mono
+        )
+        .unwrap();
+
+        assert_eq!(session.status, StreamSessionStatus::Active);
+        assert_eq!(session.windows_completed(), 0);
+        assert!(session.buffered_seconds() < 0.1);
+
+        // Send 5 seconds of audio (not enough for a full window)
+        let audio_5s = generate_test_audio(48000, 5.0, 1);
+        let new_windows = session.process_frames(&audio_5s).unwrap();
+
+        assert_eq!(new_windows, 0); // Not enough for a window yet
+        assert!(session.buffered_seconds() >= 4.9);
+        assert!(session.buffered_seconds() <= 5.1);
+
+        // Send another 6 seconds (total 11s, should trigger one 10s window)
+        let audio_6s = generate_test_audio(48000, 6.0, 1);
+        let new_windows = session.process_frames(&audio_6s).unwrap();
+
+        assert_eq!(new_windows, 1); // One window completed
+        assert_eq!(session.windows_completed(), 1);
+        // After window extraction with 5s hop, should have ~6s buffered
+        assert!(session.buffered_seconds() >= 5.5);
+    }
+
+    #[test]
+    fn test_empty_session_no_windows() {
+        // An empty session (no frames sent) should have no windows
+        let session = StreamSession::new(
+            "track_empty".to_string(),
+            test_metadata(),
+            AudioFormat::PcmS16Le,
+            48000,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(session.windows_completed(), 0);
+        assert!(session.buffered_seconds() < 0.01);
+        assert!(session.total_duration_seconds() < 0.01);
+    }
+
+    #[test]
+    fn test_session_manager_remove_cleans_up() {
+        let manager = StreamSessionManager::new();
+
+        let session_id = manager
+            .create_session(
+                "track_remove".to_string(),
+                test_metadata(),
+                AudioFormat::PcmS16Le,
+                44100,
+                2,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(manager.session_count(), 1);
+
+        // Remove session
+        let removed = manager.remove_session(&session_id);
+        assert!(removed.is_some());
+        assert_eq!(manager.session_count(), 0);
+
+        // Second remove should return None
+        let removed_again = manager.remove_session(&session_id);
+        assert!(removed_again.is_none());
+    }
+
+    #[test]
+    fn test_session_replace_existing() {
+        let manager = StreamSessionManager::new();
+
+        // Create first session
+        let session_id1 = manager
+            .create_session(
+                "track_replace".to_string(),
+                test_metadata(),
+                AudioFormat::PcmS16Le,
+                44100,
+                2,
+                false,
+            )
+            .unwrap();
+
+        // Create second session for same track with replace_existing=true
+        let session_id2 = manager
+            .create_session(
+                "track_replace".to_string(),
+                test_metadata(),
+                AudioFormat::PcmS16Le,
+                48000, // Different sample rate
+                1,
+                true, // replace_existing
+            )
+            .unwrap();
+
+        // Should still have 1 session, but with new ID
+        assert_eq!(manager.session_count(), 1);
+        assert_ne!(session_id1, session_id2);
+
+        // Old session should be gone
+        assert!(manager.get_session(&session_id1).is_none());
+        // New session should exist
+        assert!(manager.get_session(&session_id2).is_some());
+    }
+
+    #[test]
+    fn test_concurrent_sessions_different_tracks() {
+        let manager = StreamSessionManager::new();
+
+        // Create multiple sessions for different tracks
+        let ids: Vec<Uuid> = (0..5)
+            .map(|i| {
+                manager
+                    .create_session(
+                        format!("track_{}", i),
+                        test_metadata(),
+                        AudioFormat::PcmS16Le,
+                        44100,
+                        2,
+                        false,
+                    )
+                    .unwrap()
+            })
+            .collect();
+
+        assert_eq!(manager.session_count(), 5);
+
+        // All sessions should be retrievable
+        for id in &ids {
+            assert!(manager.get_session(id).is_some());
+        }
+
+        // Remove one and verify others still exist
+        manager.remove_session(&ids[2]);
+        assert_eq!(manager.session_count(), 4);
+        assert!(manager.get_session(&ids[0]).is_some());
+        assert!(manager.get_session(&ids[2]).is_none());
+        assert!(manager.get_session(&ids[4]).is_some());
+    }
+
+    #[test]
+    fn test_stereo_to_mono_conversion() {
+        let mut session = StreamSession::new(
+            "track_stereo".to_string(),
+            test_metadata(),
+            AudioFormat::PcmS16Le,
+            48000,
+            2, // Stereo
+        )
+        .unwrap();
+
+        // Generate stereo audio (1 second)
+        let stereo_audio = generate_test_audio(48000, 1.0, 2);
+
+        // Process frames - should convert to mono internally
+        session.process_frames(&stereo_audio).unwrap();
+
+        // Should have ~1 second buffered (mono samples)
+        assert!(session.buffered_seconds() >= 0.9);
+        assert!(session.buffered_seconds() <= 1.1);
+    }
+
+    #[test]
+    fn test_resampling_from_44100() {
+        let mut session = StreamSession::new(
+            "track_resample".to_string(),
+            test_metadata(),
+            AudioFormat::PcmS16Le,
+            44100, // Source rate (needs resampling to 48kHz)
+            1,
+        )
+        .unwrap();
+
+        // Generate 1 second at 44100Hz
+        let audio = generate_test_audio(44100, 1.0, 1);
+        session.process_frames(&audio).unwrap();
+
+        // After resampling to 48kHz, should have approximately 1 second
+        // (might be slightly different due to resampler chunk processing)
+        assert!(session.buffered_seconds() >= 0.8);
+        assert!(session.buffered_seconds() <= 1.2);
+    }
+
+    #[test]
+    fn test_window_overlap() {
+        // Test that windows use 50% overlap (hop = 5s, window = 10s)
+        let mut session = StreamSession::new(
+            "track_overlap".to_string(),
+            test_metadata(),
+            AudioFormat::PcmS16Le,
+            48000,
+            1,
+        )
+        .unwrap();
+
+        // Send 20 seconds of audio
+        // Should produce: window 1 at 0-10s, window 2 at 5-15s, window 3 at 10-20s
+        let audio_20s = generate_test_audio(48000, 20.0, 1);
+        let new_windows = session.process_frames(&audio_20s).unwrap();
+
+        // With 20s audio and 5s hop, we get 3 windows: 0-10, 5-15, 10-20
+        assert_eq!(new_windows, 3);
+        assert_eq!(session.windows_completed(), 3);
+
+        // Buffer should have 5s remaining (20s - 3*5s hop)
+        assert!(session.buffered_seconds() >= 4.5);
+        assert!(session.buffered_seconds() <= 5.5);
+    }
+
+    #[test]
+    fn test_session_duration_tracking() {
+        let mut session = StreamSession::new(
+            "track_duration".to_string(),
+            test_metadata(),
+            AudioFormat::PcmS16Le,
+            48000,
+            1,
+        )
+        .unwrap();
+
+        // Initially no duration
+        assert!(session.total_duration_seconds() < 0.1);
+
+        // Add 5 seconds
+        let audio_5s = generate_test_audio(48000, 5.0, 1);
+        session.process_frames(&audio_5s).unwrap();
+        assert!((session.total_duration_seconds() - 5.0).abs() < 0.5);
+
+        // Add 10 more seconds (total 15s input)
+        let audio_10s = generate_test_audio(48000, 10.0, 1);
+        session.process_frames(&audio_10s).unwrap();
+
+        // With 15s audio: triggers windows at 10s and 15s (with 5s hop)
+        // Window count should be 2 (10s mark and 15s mark)
+        // total_duration_seconds = WINDOW_SAMPLES + (n-1)*HOP + buffer
+        // = 10s + 1*5s + buffer
+        // The function reports the *processed* duration which can exceed input
+        // due to how window-based processing works
+        let total = session.total_duration_seconds();
+        assert!(total >= 14.0, "Expected at least 14s, got {}s", total);
+        assert!(
+            session.windows_completed() >= 1,
+            "Expected at least 1 window"
+        );
+    }
+
+    #[test]
+    fn test_session_is_timed_out() {
+        let session = StreamSession::new(
+            "track_timeout".to_string(),
+            test_metadata(),
+            AudioFormat::PcmS16Le,
+            48000,
+            1,
+        )
+        .unwrap();
+
+        // Fresh session should not be timed out
+        assert!(!session.is_timed_out());
+
+        // We can't easily test actual timeout without sleeping,
+        // but we can verify the age tracking works
+        assert!(session.age_seconds() < 1.0);
+    }
+
+    #[test]
+    fn test_cleanup_empty_manager() {
+        let manager = StreamSessionManager::new();
+
+        // Cleanup on empty manager should return 0
+        let cleaned = manager.cleanup_timed_out();
+        assert_eq!(cleaned, 0);
+    }
+
+    #[test]
+    fn test_invalid_audio_format_f32() {
+        let session = StreamSession::new(
+            "track_f32".to_string(),
+            test_metadata(),
+            AudioFormat::PcmF32Le,
+            48000,
+            1,
+        )
+        .unwrap();
+
+        // F32 format: 4 bytes per sample
+        // Value 0.5 in IEEE 754 float
+        let sample: f32 = 0.5;
+        let data = sample.to_le_bytes().to_vec();
+        let samples = session.bytes_to_f32(&data).unwrap();
+
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_mel_filterbank_initialized() {
+        // Verify mel filterbank is created with correct dimensions
+        let session = StreamSession::new(
+            "track_mel".to_string(),
+            test_metadata(),
+            AudioFormat::PcmS16Le,
+            48000,
+            1,
+        )
+        .unwrap();
+
+        // Mel filterbank should be [n_mels, n_fft/2+1] = [64, 1025]
+        let shape = session.mel_filterbank.shape();
+        assert_eq!(shape[0], CLAP_N_MELS);
+        assert_eq!(shape[1], CLAP_N_FFT / 2 + 1);
     }
 }
