@@ -1,6 +1,12 @@
 //! Shared mathematical utilities for vector operations.
+//!
+//! Uses ndarray for SIMD-optimized operations through BLAS.
+
+use ndarray::ArrayView1;
 
 /// Compute cosine similarity between two vectors.
+///
+/// Uses ndarray's optimized dot product for SIMD acceleration.
 ///
 /// Returns 0.0 if vectors have different lengths, are empty, or have zero magnitude.
 ///
@@ -15,9 +21,12 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
 
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let a_view = ArrayView1::from(a);
+    let b_view = ArrayView1::from(b);
+
+    let dot = a_view.dot(&b_view);
+    let norm_a = a_view.dot(&a_view).sqrt();
+    let norm_b = b_view.dot(&b_view).sqrt();
 
     if norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
@@ -33,7 +42,8 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// # Arguments
 /// * `v` - Mutable slice to normalize
 pub fn normalize_in_place(v: &mut [f32]) {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let view = ArrayView1::from(&*v);
+    let norm = view.dot(&view).sqrt();
     if norm > 0.0 {
         for x in v {
             *x /= norm;
@@ -49,7 +59,8 @@ pub fn normalize_in_place(v: &mut [f32]) {
 /// # Returns
 /// New vector with unit length (or zero vector if input has zero magnitude)
 pub fn normalize(v: &[f32]) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let view = ArrayView1::from(v);
+    let norm = view.dot(&view).sqrt();
     if norm > 0.0 {
         v.iter().map(|x| x / norm).collect()
     } else {
@@ -59,16 +70,23 @@ pub fn normalize(v: &[f32]) -> Vec<f32> {
 
 /// Compute dot product of two vectors.
 ///
+/// Uses ndarray's optimized dot product for SIMD acceleration.
+///
 /// # Panics
 /// Panics if vectors have different lengths.
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "Vectors must have same length");
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    let a_view = ArrayView1::from(a);
+    let b_view = ArrayView1::from(b);
+    a_view.dot(&b_view)
 }
 
 /// Compute L2 norm (magnitude) of a vector.
+///
+/// Uses ndarray's optimized dot product for computing squared magnitude.
 pub fn l2_norm(v: &[f32]) -> f32 {
-    v.iter().map(|x| x * x).sum::<f32>().sqrt()
+    let view = ArrayView1::from(v);
+    view.dot(&view).sqrt()
 }
 
 #[cfg(test)]
