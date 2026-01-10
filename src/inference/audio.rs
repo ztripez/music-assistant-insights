@@ -30,22 +30,42 @@ pub const CLAP_SPEC_SIZE: usize = 256;
 /// Embedding dimension for CLAP models (512-d vectors)
 pub const EMBEDDING_DIM: usize = 512;
 
-/// Audio format enumeration
+/// Supported PCM audio formats.
+///
+/// These formats represent raw, uncompressed audio data. Music Assistant
+/// typically streams audio in one of these formats during playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioFormat {
-    /// 32-bit float little-endian
+    /// 32-bit IEEE 754 floating-point, little-endian.
+    /// Range: -1.0 to 1.0
     PcmF32Le,
-    /// 16-bit signed integer little-endian
+    /// 16-bit signed integer, little-endian.
+    /// Range: -32768 to 32767
     PcmS16Le,
-    /// 24-bit signed integer little-endian (packed)
+    /// 24-bit signed integer, little-endian (packed, 3 bytes per sample).
+    /// Range: -8388608 to 8388607
     PcmS24Le,
 }
 
-/// Convert raw PCM bytes to f32 samples based on format.
+/// Convert raw PCM bytes to normalized f32 samples.
 ///
-/// This is the shared implementation used by both `AudioData::to_f32_samples`
+/// This is the shared implementation used by both [`AudioData::to_f32_samples`]
 /// and streaming audio processing.
+///
+/// # Arguments
+///
+/// * `data` - Raw PCM bytes in the specified format
+/// * `format` - The audio format describing how bytes are encoded
+///
+/// # Returns
+///
+/// A vector of f32 samples normalized to the range [-1.0, 1.0].
+///
+/// # Errors
+///
+/// Returns [`InferenceError::InvalidAudioFormat`] if the byte length is not
+/// a multiple of the sample size for the given format.
 pub fn pcm_to_f32(data: &[u8], format: AudioFormat) -> Result<Vec<f32>, InferenceError> {
     match format {
         AudioFormat::PcmF32Le => {
@@ -95,41 +115,78 @@ pub fn pcm_to_f32(data: &[u8], format: AudioFormat) -> Result<Vec<f32>, Inferenc
     }
 }
 
-/// Raw audio data with format information
+/// Raw audio data with format and layout information.
+///
+/// This struct encapsulates PCM audio data along with the metadata needed
+/// to interpret it (format, sample rate, channel count).
+///
+/// # Serialization
+///
+/// Uses msgpack-optimized byte serialization for efficient transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioData {
-    /// Audio format
+    /// PCM encoding format (S16LE, S24LE, or F32LE)
     pub format: AudioFormat,
-    /// Sample rate in Hz
+    /// Sample rate in Hz (e.g., 44100, 48000)
     pub sample_rate: u32,
-    /// Number of channels (1 = mono, 2 = stereo)
+    /// Number of audio channels (1 = mono, 2 = stereo)
     pub channels: u8,
-    /// Raw PCM bytes
+    /// Raw PCM bytes (interleaved if stereo)
     #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
 impl AudioData {
-    /// Convert raw bytes to f32 samples based on format
+    /// Convert raw PCM bytes to normalized f32 samples.
+    ///
+    /// Delegates to [`pcm_to_f32`] using this struct's format.
+    ///
+    /// # Returns
+    ///
+    /// A vector of f32 samples normalized to [-1.0, 1.0].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InferenceError::InvalidAudioFormat`] if byte length is invalid.
     pub fn to_f32_samples(&self) -> Result<Vec<f32>, InferenceError> {
         pcm_to_f32(&self.data, self.format)
     }
 }
 
-/// Mel spectrogram features for a single audio window
-/// Shape: [spec_size (height), n_mels (width)] flattened to 1D in row-major order
-/// This matches CLAP's expected input: [batch, 1, height, width] = [1, 1, spec_size, n_mels]
+/// Mel spectrogram features for a single audio window.
+///
+/// Contains a log-mel spectrogram resized to CLAP's expected dimensions.
+/// The data is stored in row-major order: `[time_frames, mel_bins]`.
+///
+/// # Shape
+///
+/// - **Height**: [`CLAP_SPEC_SIZE`] (256 time frames)
+/// - **Width**: [`CLAP_N_MELS`] (64 mel frequency bins)
+/// - **Total size**: 256 × 64 = 16,384 values
+///
+/// This matches CLAP's expected input tensor shape: `[batch, 1, height, width]`.
 #[derive(Debug, Clone)]
 pub struct MelFeatures {
-    /// Flattened mel spectrogram data in row-major order [spec_size, n_mels]
+    /// Flattened mel spectrogram data in row-major order `[height, width]`
     pub data: Vec<f32>,
-    /// Spectrogram height (time frames, resized to CLAP_SPEC_SIZE=256)
+    /// Spectrogram height (time frames, always [`CLAP_SPEC_SIZE`])
     pub height: usize,
-    /// Spectrogram width (mel bins = 64)
+    /// Spectrogram width (mel bins, always [`CLAP_N_MELS`])
     pub width: usize,
 }
 
-/// Audio processor for preparing audio for CLAP inference
+/// Audio processor for preparing audio for CLAP inference.
+///
+/// Handles the complete audio preprocessing pipeline:
+/// 1. Format conversion (PCM to f32)
+/// 2. Stereo to mono downmix
+/// 3. Resampling to 48kHz
+/// 4. Windowing with configurable overlap
+/// 5. Mel spectrogram computation
+///
+/// # Thread Safety
+///
+/// This struct is **not** thread-safe. Wrap in `Mutex` for concurrent access.
 pub struct AudioProcessor {
     target_sample_rate: u32,
     window_samples: usize,
@@ -138,12 +195,24 @@ pub struct AudioProcessor {
 }
 
 impl AudioProcessor {
-    /// Create a new audio processor
+    /// Create a new audio processor.
+    ///
+    /// Pre-computes the mel filterbank for efficient spectrogram computation.
     ///
     /// # Arguments
+    ///
     /// * `target_sample_rate` - Target sample rate (typically 48000 for CLAP)
-    /// * `window_size_s` - Window size in seconds
+    /// * `window_size_s` - Window size in seconds (typically 10.0 for CLAP)
     /// * `hop_size_s` - Hop size in seconds (overlap = window - hop)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use insight_sidecar::inference::AudioProcessor;
+    ///
+    /// // 10-second windows with no overlap
+    /// let processor = AudioProcessor::new(48000, 10.0, 10.0);
+    /// ```
     pub fn new(target_sample_rate: u32, window_size_s: f32, hop_size_s: f32) -> Self {
         let window_samples = (target_sample_rate as f32 * window_size_s) as usize;
         let hop_samples = (target_sample_rate as f32 * hop_size_s) as usize;
@@ -177,9 +246,24 @@ impl AudioProcessor {
         }
     }
 
-    /// Process audio data into mel spectrogram windows suitable for CLAP inference
+    /// Process audio data into mel spectrogram windows.
     ///
-    /// Returns a vector of MelFeatures, each representing a time window's mel spectrogram
+    /// Performs the full preprocessing pipeline and extracts mel spectrograms
+    /// for each time window.
+    ///
+    /// # Arguments
+    ///
+    /// * `audio` - Raw audio data to process
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`MelFeatures`], one per time window. For 10-second windows
+    /// with no overlap, a 45-second track would produce 4 windows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InferenceError::InvalidAudioFormat`] if audio format is unsupported.
+    /// Returns [`InferenceError::AudioProcessing`] if STFT or mel computation fails.
     pub fn process(&mut self, audio: &AudioData) -> Result<Vec<MelFeatures>, InferenceError> {
         // Convert to f32
         let samples = audio.to_f32_samples()?;
@@ -233,14 +317,23 @@ impl AudioProcessor {
 
 /// Compute mel spectrogram for a single audio window.
 ///
-/// This is the shared implementation used by both `AudioProcessor` and streaming.
+/// This is the shared implementation used by both [`AudioProcessor`] and
+/// the streaming pipeline. Computes STFT, applies the mel filterbank,
+/// log-scales, and resizes to CLAP's expected dimensions.
 ///
 /// # Arguments
-/// * `samples` - Audio samples at 48kHz
-/// * `mel_filterbank` - Pre-computed mel filterbank of shape [n_mels, n_fft/2+1]
+///
+/// * `samples` - Audio samples at 48kHz (mono, f32)
+/// * `mel_filterbank` - Pre-computed mel filterbank of shape `[n_mels, n_fft/2+1]`
 ///
 /// # Returns
-/// `MelFeatures` with shape [CLAP_SPEC_SIZE, CLAP_N_MELS] ready for CLAP inference
+///
+/// [`MelFeatures`] with shape `[CLAP_SPEC_SIZE, CLAP_N_MELS]` ready for inference.
+///
+/// # Errors
+///
+/// Returns [`InferenceError::AudioProcessing`] if no STFT frames are produced
+/// (audio too short) or if matrix operations fail.
 pub fn compute_mel_spectrogram(
     samples: &[f32],
     mel_filterbank: &ndarray::Array2<f32>,
@@ -308,8 +401,22 @@ pub fn compute_mel_spectrogram(
     })
 }
 
-/// Resize mel spectrogram from [n_mels, src_time] to [dst_time, n_mels]
-/// This transposes and resizes in one pass using linear interpolation along time axis
+/// Resize and transpose mel spectrogram to target dimensions.
+///
+/// Converts from `[n_mels, src_time]` to `[dst_time, n_mels]` using linear
+/// interpolation along the time axis. This operation is necessary because
+/// CLAP expects a fixed-size spectrogram regardless of input audio length.
+///
+/// # Arguments
+///
+/// * `data` - Input mel spectrogram flattened in row-major order `[n_mels, src_time]`
+/// * `n_mels` - Number of mel frequency bins (64 for CLAP)
+/// * `src_time` - Number of time frames in the input
+/// * `dst_time` - Target number of time frames (256 for CLAP)
+///
+/// # Returns
+///
+/// Resized spectrogram flattened in row-major order `[dst_time, n_mels]`.
 pub fn resize_mel_spectrogram(
     data: &[f32],
     n_mels: usize,

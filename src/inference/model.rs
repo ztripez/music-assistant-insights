@@ -113,10 +113,32 @@ impl SessionPool {
     }
 }
 
-/// CLAP model for generating text and audio embeddings
+/// CLAP (Contrastive Language-Audio Pretraining) model for generating embeddings.
 ///
-/// Uses session pools for concurrent inference - multiple requests can be
-/// processed simultaneously using round-robin session allocation.
+/// This model generates 512-dimensional embeddings for both text and audio,
+/// mapping them into a shared semantic space where similar content has similar vectors.
+///
+/// # Features
+///
+/// - **Text embeddings**: From track metadata (title, artist, album, genres)
+/// - **Audio embeddings**: From mel spectrogram features (10-second windows)
+/// - **Session pools**: Multiple requests processed concurrently via round-robin allocation
+///
+/// # Thread Safety
+///
+/// This struct is `Send + Sync` and can be shared across threads via `Arc<ClapModel>`.
+/// Internal mutexes protect the session pools and audio processor.
+///
+/// # Example
+///
+/// ```ignore
+/// use insight_sidecar::inference::{ClapModel, ModelPaths};
+///
+/// let paths = ModelPaths::from_directory("models/clap");
+/// let model = ClapModel::load(&paths, false).unwrap();
+///
+/// let embedding = model.text_embedding("Queen - Bohemian Rhapsody").unwrap();
+/// ```
 pub struct ClapModel {
     text_sessions: SessionPool,
     audio_sessions: SessionPool,
@@ -138,12 +160,38 @@ impl std::fmt::Debug for ClapModel {
 }
 
 impl ClapModel {
-    /// Load CLAP model from downloaded paths
+    /// Load CLAP model from downloaded paths.
+    ///
+    /// This is a convenience method that wraps [`load_with_config`](Self::load_with_config)
+    /// with a simple CUDA toggle.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - Paths to the ONNX model files (text encoder, audio encoder, tokenizer)
+    /// * `use_cuda` - Whether to attempt CUDA acceleration (requires `cuda` feature)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InferenceError::Onnx`] if model files cannot be loaded.
+    /// Returns [`InferenceError::Onnx`] if ONNX Runtime session creation fails.
     pub fn load(paths: &ModelPaths, use_cuda: bool) -> Result<Self, InferenceError> {
         Self::load_with_config(paths, DeviceConfig::with_cuda(use_cuda))
     }
 
-    /// Load CLAP model with full device configuration
+    /// Load CLAP model with full device configuration.
+    ///
+    /// Creates session pools for concurrent inference. Each pool contains
+    /// multiple ONNX sessions for parallel request processing.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - Paths to the ONNX model files
+    /// * `device_config` - Hardware acceleration configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InferenceError::Onnx`] if model files cannot be read.
+    /// Returns [`InferenceError::Onnx`] if ONNX Runtime fails to create sessions.
     pub fn load_with_config(
         paths: &ModelPaths,
         device_config: DeviceConfig,
@@ -299,12 +347,31 @@ impl ClapModel {
             .map_err(|e| InferenceError::Onnx(format!("Failed to load model: {e}")))
     }
 
-    /// Get the device being used for inference
+    /// Get the device being used for inference.
+    ///
+    /// # Returns
+    ///
+    /// The [`Device`] variant (CPU, CUDA, ROCm, etc.) currently in use.
     pub fn device(&self) -> Device {
         self.device
     }
 
-    /// Generate text embedding from input text
+    /// Generate a text embedding from input text.
+    ///
+    /// The input text is tokenized, passed through the text encoder, and normalized
+    /// to produce a unit-length 512-dimensional embedding vector.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The input text (typically formatted track metadata)
+    ///
+    /// # Returns
+    ///
+    /// A normalized [`Embedding`] vector suitable for similarity search.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InferenceError::Onnx`] if tokenization or inference fails.
     pub fn text_embedding(&self, text: &str) -> Result<Embedding, InferenceError> {
         let outputs = self.run_text_inference(text)?;
         let mut embedding = Embedding::from_raw(outputs);
@@ -460,7 +527,24 @@ impl ClapModel {
         Ok(result)
     }
 
-    /// Generate audio embedding from audio data
+    /// Generate an audio embedding from raw audio data.
+    ///
+    /// The audio is preprocessed (resampled, converted to mono, windowed) and
+    /// transformed into mel spectrograms. Each window produces an embedding,
+    /// which are averaged and normalized to produce the final vector.
+    ///
+    /// # Arguments
+    ///
+    /// * `audio` - Raw audio data with format, sample rate, and channel info
+    ///
+    /// # Returns
+    ///
+    /// A normalized [`Embedding`] vector representing the audio content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InferenceError::AudioProcessing`] if audio preprocessing fails.
+    /// Returns [`InferenceError::Onnx`] if inference fails.
     pub fn audio_embedding(&self, audio: &AudioData) -> Result<Embedding, InferenceError> {
         let mut processor = self
             .audio_processor
@@ -502,10 +586,25 @@ impl ClapModel {
         Ok(embedding)
     }
 
-    /// Run audio inference on pre-computed mel spectrogram features
+    /// Run audio inference on pre-computed mel spectrogram features.
     ///
-    /// This is used by streaming to defer inference to session finalization.
-    /// Returns raw embedding vector (not normalized).
+    /// This method is used by the streaming pipeline to defer inference until
+    /// session finalization, allowing mel spectrograms to be computed incrementally
+    /// as audio frames arrive.
+    ///
+    /// # Arguments
+    ///
+    /// * `mel_features` - Pre-computed mel spectrogram features from [`compute_mel_spectrogram`]
+    ///
+    /// # Returns
+    ///
+    /// A raw (unnormalized) embedding vector. Caller should normalize if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InferenceError::Onnx`] if ONNX inference fails.
+    ///
+    /// [`compute_mel_spectrogram`]: crate::inference::compute_mel_spectrogram
     pub fn run_audio_inference_from_mel(
         &self,
         mel_features: &MelFeatures,

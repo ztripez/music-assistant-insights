@@ -284,13 +284,43 @@ impl SearchFilter {
     }
 }
 
-/// Trait for vector storage backends
+/// Trait for vector storage backends.
+///
+/// This trait defines the interface for storing and retrieving vector embeddings
+/// with associated metadata. Implementations include Qdrant (cloud/docker) and
+/// usearch (file-based).
+///
+/// All methods are async and return `Result<T, StorageError>`.
 #[async_trait]
 pub trait VectorStorage: Send + Sync {
-    /// Initialize storage and create collections if needed
+    /// Initialize storage and create collections if needed.
+    ///
+    /// This should be called once before using other methods. It creates
+    /// the required collections (`tracks_text`, `tracks_audio`, `taste_profiles`)
+    /// with the correct vector dimensions and indexes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::ConnectionFailed`] if the storage backend is unreachable.
+    /// Returns [`StorageError::OperationFailed`] if collection creation fails.
     async fn initialize(&self) -> Result<(), StorageError>;
 
-    /// Upsert a single embedding
+    /// Insert or update a single embedding.
+    ///
+    /// If an embedding with the same `track_id` already exists in the collection,
+    /// it will be replaced with the new embedding and metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - Collection name (e.g., `tracks_text`, `tracks_audio`)
+    /// * `track_id` - Unique identifier for the track (Music Assistant `item_id`)
+    /// * `embedding` - Vector embedding (must be [`EMBEDDING_DIM`] dimensions)
+    /// * `metadata` - Track metadata to store alongside the embedding
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidDimension`] if embedding length != [`EMBEDDING_DIM`].
+    /// Returns [`StorageError::CollectionNotFound`] if the collection doesn't exist.
     async fn upsert(
         &self,
         collection: &str,
@@ -299,14 +329,44 @@ pub trait VectorStorage: Send + Sync {
         metadata: TrackMetadata,
     ) -> Result<(), StorageError>;
 
-    /// Upsert multiple embeddings in a batch
+    /// Insert or update multiple embeddings in a batch.
+    ///
+    /// More efficient than calling [`upsert`](Self::upsert) multiple times for bulk operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - Collection name
+    /// * `items` - Vector of (track_id, embedding, metadata) tuples
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidDimension`] if any embedding has wrong dimensions.
+    /// Returns [`StorageError::CollectionNotFound`] if the collection doesn't exist.
     async fn upsert_batch(
         &self,
         collection: &str,
         items: Vec<(String, Vec<f32>, TrackMetadata)>,
     ) -> Result<(), StorageError>;
 
-    /// Search for similar embeddings
+    /// Search for similar embeddings using cosine similarity.
+    ///
+    /// Returns tracks ordered by similarity score (highest first).
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - Collection to search in
+    /// * `query` - Query embedding vector (must be [`EMBEDDING_DIM`] dimensions)
+    /// * `limit` - Maximum number of results to return
+    /// * `filter` - Optional filter to narrow results by metadata
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`SearchResult`] ordered by descending similarity score.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidDimension`] if query has wrong dimensions.
+    /// Returns [`StorageError::CollectionNotFound`] if the collection doesn't exist.
     async fn search(
         &self,
         collection: &str,
@@ -315,51 +375,165 @@ pub trait VectorStorage: Send + Sync {
         filter: Option<SearchFilter>,
     ) -> Result<Vec<SearchResult>, StorageError>;
 
-    /// Delete an embedding by track ID
+    /// Delete an embedding by track ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - Collection to delete from
+    /// * `track_id` - ID of the track to delete
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::PointNotFound`] if the track doesn't exist.
+    /// Returns [`StorageError::CollectionNotFound`] if the collection doesn't exist.
     async fn delete(&self, collection: &str, track_id: &str) -> Result<(), StorageError>;
 
-    /// Delete multiple embeddings by track IDs
+    /// Delete multiple embeddings by track IDs.
+    ///
+    /// More efficient than calling [`delete`](Self::delete) multiple times.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - Collection to delete from
+    /// * `track_ids` - Slice of track IDs to delete
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::CollectionNotFound`] if the collection doesn't exist.
     async fn delete_batch(
         &self,
         collection: &str,
         track_ids: &[String],
     ) -> Result<(), StorageError>;
 
-    /// Get an embedding by track ID
+    /// Get an embedding by track ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - Collection to query
+    /// * `track_id` - ID of the track to retrieve
+    ///
+    /// # Returns
+    ///
+    /// `Some(StoredEmbedding)` if found, `None` if the track doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::CollectionNotFound`] if the collection doesn't exist.
     async fn get(
         &self,
         collection: &str,
         track_id: &str,
     ) -> Result<Option<StoredEmbedding>, StorageError>;
 
-    /// Check if a track exists in the collection
+    /// Check if a track exists in the collection.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - Collection to check
+    /// * `track_id` - ID of the track to look for
+    ///
+    /// # Returns
+    ///
+    /// `true` if the track exists, `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::CollectionNotFound`] if the collection doesn't exist.
     async fn exists(&self, collection: &str, track_id: &str) -> Result<bool, StorageError>;
 
-    /// Get the count of embeddings in a collection
+    /// Get the count of embeddings in a collection.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - Collection to count
+    ///
+    /// # Returns
+    ///
+    /// The number of embeddings stored in the collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::CollectionNotFound`] if the collection doesn't exist.
     async fn count(&self, collection: &str) -> Result<u64, StorageError>;
 
+    // ========================================================================
     // Taste profile methods
-    /// Store or update a taste profile
+    // ========================================================================
+
+    /// Store or update a user's taste profile.
+    ///
+    /// Taste profiles represent user preferences computed from listening history.
+    ///
+    /// # Arguments
+    ///
+    /// * `profile` - The taste profile to store
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::OperationFailed`] if storage fails.
     async fn store_taste_profile(&self, profile: TasteProfile) -> Result<(), StorageError>;
 
-    /// Get a taste profile by user ID and profile type
+    /// Get a taste profile by user ID and profile type.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user's identifier
+    /// * `profile_type` - Type of profile to retrieve (global, genre-specific, etc.)
+    ///
+    /// # Returns
+    ///
+    /// `Some(TasteProfile)` if found, `None` if no matching profile exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::OperationFailed`] if the query fails.
     async fn get_taste_profile(
         &self,
         user_id: &str,
         profile_type: &ProfileType,
     ) -> Result<Option<TasteProfile>, StorageError>;
 
-    /// List all profiles for a user
+    /// List all taste profiles for a user.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user's identifier
+    ///
+    /// # Returns
+    ///
+    /// A vector of all taste profiles belonging to the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::OperationFailed`] if the query fails.
     async fn list_user_profiles(&self, user_id: &str) -> Result<Vec<TasteProfile>, StorageError>;
 
-    /// Delete a specific taste profile
+    /// Delete a specific taste profile.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user's identifier
+    /// * `profile_type` - Type of profile to delete
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::PointNotFound`] if the profile doesn't exist.
     async fn delete_taste_profile(
         &self,
         user_id: &str,
         profile_type: &ProfileType,
     ) -> Result<(), StorageError>;
 
-    /// Delete all profiles for a user
+    /// Delete all taste profiles for a user.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user's identifier
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::OperationFailed`] if deletion fails.
     async fn delete_user_profiles(&self, user_id: &str) -> Result<(), StorageError>;
 }
 

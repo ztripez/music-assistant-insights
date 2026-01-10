@@ -1,19 +1,63 @@
 //! Text preprocessing for CLAP model.
+//!
+//! This module provides utilities for formatting track metadata into text
+//! strings suitable for CLAP text embedding generation.
 
-/// Track metadata for text embedding generation
+/// Track metadata for text embedding generation.
+///
+/// Contains the essential fields from a music track that contribute to
+/// its semantic meaning when generating text embeddings.
 #[derive(Debug, Clone)]
 pub struct TrackMetadata {
+    /// Track title/name
     pub name: String,
+    /// Artist names (may be multiple for collaborations)
     pub artists: Vec<String>,
+    /// Album name (if known)
     pub album: Option<String>,
+    /// Genre tags (e.g., "rock", "indie", "electronic")
     pub genres: Vec<String>,
+    /// Mood descriptor (e.g., "energetic", "melancholic")
     pub mood: Option<String>,
 }
 
-/// Format track metadata into a text string suitable for CLAP embedding
+/// Format track metadata into a text string suitable for CLAP embedding.
 ///
-/// The format is designed to capture the semantic meaning of the track:
-/// "Artist Name - Track Name. Album: Album Name. Genres: rock, indie. Mood: energetic"
+/// The format is designed to capture the semantic meaning of the track
+/// in a natural language format that CLAP can understand.
+///
+/// # Format
+///
+/// ```text
+/// Artist Name - Track Name. Album: Album Name. Genres: rock, indie. Mood: energetic
+/// ```
+///
+/// Only non-empty fields are included in the output.
+///
+/// # Arguments
+///
+/// * `metadata` - Track metadata to format
+///
+/// # Returns
+///
+/// A formatted string suitable for text embedding generation.
+///
+/// # Example
+///
+/// ```ignore
+/// use insight_sidecar::inference::text::{TrackMetadata, format_track_metadata};
+///
+/// let metadata = TrackMetadata {
+///     name: "Bohemian Rhapsody".to_string(),
+///     artists: vec!["Queen".to_string()],
+///     album: Some("A Night at the Opera".to_string()),
+///     genres: vec!["Rock".to_string()],
+///     mood: None,
+/// };
+///
+/// let text = format_track_metadata(&metadata);
+/// assert!(text.contains("Queen - Bohemian Rhapsody"));
+/// ```
 pub fn format_track_metadata(metadata: &TrackMetadata) -> String {
     let mut parts = Vec::new();
 
