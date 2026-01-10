@@ -570,14 +570,21 @@ pub async fn embed_text_and_store(
     }))
 }
 
+/// Maximum concurrency for storage-only batch operations
+#[cfg(feature = "storage")]
+const BATCH_STORAGE_CONCURRENCY: usize = 16;
+
 /// POST /api/v1/tracks/batch-upsert
 ///
 /// Batch upsert multiple track embeddings.
+/// Uses concurrent processing with bounded parallelism for better throughput.
 #[cfg(feature = "storage")]
 pub async fn batch_upsert(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<BatchUpsertRequest>,
 ) -> Result<MsgPack<BatchUpsertResponse>, AppError> {
+    use futures::stream::{self, StreamExt};
+
     // Validate batch size
     if req.tracks.len() > MAX_BATCH_SIZE {
         return Err(AppError::BadRequest(format!(
@@ -590,95 +597,99 @@ pub async fn batch_upsert(
     let storage = state
         .storage
         .as_ref()
-        .ok_or_else(|| AppError::Internal("Storage not configured".to_string()))?;
+        .ok_or_else(|| AppError::Internal("Storage not configured".to_string()))?
+        .clone();
 
     let total = req.tracks.len();
-    info!(count = total, "Batch upserting tracks");
+    info!(count = total, "Batch upserting tracks (concurrent)");
 
-    let mut results = Vec::with_capacity(total);
-    let mut succeeded = 0;
-    let mut failed = 0;
+    // Process tracks concurrently with bounded parallelism
+    let results: Vec<BatchUpsertResult> = stream::iter(req.tracks)
+        .map(|track| {
+            let storage = storage.clone();
+            async move {
+                let track_id = track.track_id.clone();
+                let mut text_stored = false;
+                let mut audio_stored = false;
+                let mut error_msg: Option<String> = None;
 
-    for track in req.tracks {
-        let track_id = track.track_id.clone();
-        let mut text_stored = false;
-        let mut audio_stored = false;
-        let mut error_msg: Option<String> = None;
+                let metadata = track.metadata.into_storage(track_id.clone());
 
-        let metadata = track.metadata.into_storage(track_id.clone());
-
-        // Validate and store text embedding
-        if let Some(ref embedding) = track.text_embedding {
-            if embedding.len() != EMBEDDING_DIM {
-                error_msg = Some(format!(
-                    "Text embedding dimension mismatch: expected {}, got {}",
-                    EMBEDDING_DIM,
-                    embedding.len()
-                ));
-            } else {
-                match storage
-                    .upsert(TEXT_COLLECTION, &track_id, embedding, metadata.clone())
-                    .await
-                {
-                    Ok(_) => {
-                        text_stored = true;
-                        debug!(track_id = %track_id, "Text embedding stored");
-                    }
-                    Err(e) => {
-                        error!(error = %e, track_id = %track_id, "Failed to upsert text embedding");
-                        error_msg = Some(e.to_string());
-                    }
-                }
-            }
-        }
-
-        // Validate and store audio embedding (only if no error yet)
-        if error_msg.is_none() {
-            if let Some(ref embedding) = track.audio_embedding {
-                if embedding.len() != EMBEDDING_DIM {
-                    error_msg = Some(format!(
-                        "Audio embedding dimension mismatch: expected {}, got {}",
-                        EMBEDDING_DIM,
-                        embedding.len()
-                    ));
-                } else {
-                    match storage
-                        .upsert(AUDIO_COLLECTION, &track_id, embedding, metadata)
-                        .await
-                    {
-                        Ok(_) => {
-                            audio_stored = true;
-                            debug!(track_id = %track_id, "Audio embedding stored");
-                        }
-                        Err(e) => {
-                            error!(error = %e, track_id = %track_id, "Failed to upsert audio embedding");
-                            error_msg = Some(e.to_string());
+                // Validate and store text embedding
+                if let Some(ref embedding) = track.text_embedding {
+                    if embedding.len() != EMBEDDING_DIM {
+                        error_msg = Some(format!(
+                            "Text embedding dimension mismatch: expected {}, got {}",
+                            EMBEDDING_DIM,
+                            embedding.len()
+                        ));
+                    } else {
+                        match storage
+                            .upsert(TEXT_COLLECTION, &track_id, embedding, metadata.clone())
+                            .await
+                        {
+                            Ok(_) => {
+                                text_stored = true;
+                                debug!(track_id = %track_id, "Text embedding stored");
+                            }
+                            Err(e) => {
+                                error!(error = %e, track_id = %track_id, "Failed to upsert text embedding");
+                                error_msg = Some(e.to_string());
+                            }
                         }
                     }
                 }
+
+                // Validate and store audio embedding (only if no error yet)
+                if error_msg.is_none() {
+                    if let Some(ref embedding) = track.audio_embedding {
+                        if embedding.len() != EMBEDDING_DIM {
+                            error_msg = Some(format!(
+                                "Audio embedding dimension mismatch: expected {}, got {}",
+                                EMBEDDING_DIM,
+                                embedding.len()
+                            ));
+                        } else {
+                            match storage
+                                .upsert(AUDIO_COLLECTION, &track_id, embedding, metadata)
+                                .await
+                            {
+                                Ok(_) => {
+                                    audio_stored = true;
+                                    debug!(track_id = %track_id, "Audio embedding stored");
+                                }
+                                Err(e) => {
+                                    error!(error = %e, track_id = %track_id, "Failed to upsert audio embedding");
+                                    error_msg = Some(e.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Check if at least one embedding was provided
+                if error_msg.is_none() && !text_stored && !audio_stored {
+                    error_msg =
+                        Some("At least one embedding (text or audio) must be provided".to_string());
+                }
+
+                let success = error_msg.is_none() && (text_stored || audio_stored);
+                BatchUpsertResult {
+                    track_id,
+                    success,
+                    error: error_msg,
+                    text_stored,
+                    audio_stored,
+                }
             }
-        }
+        })
+        .buffer_unordered(BATCH_STORAGE_CONCURRENCY)
+        .collect()
+        .await;
 
-        // Check if at least one embedding was provided
-        if error_msg.is_none() && !text_stored && !audio_stored {
-            error_msg = Some("At least one embedding (text or audio) must be provided".to_string());
-        }
-
-        let success = error_msg.is_none() && (text_stored || audio_stored);
-        if success {
-            succeeded += 1;
-        } else {
-            failed += 1;
-        }
-
-        results.push(BatchUpsertResult {
-            track_id,
-            success,
-            error: error_msg,
-            text_stored,
-            audio_stored,
-        });
-    }
+    // Count successes and failures
+    let succeeded = results.iter().filter(|r| r.success).count();
+    let failed = total - succeeded;
 
     info!(total, succeeded, failed, "Batch upsert complete");
 
@@ -690,14 +701,21 @@ pub async fn batch_upsert(
     }))
 }
 
+/// Maximum concurrency for batch operations (prevents thread pool exhaustion)
+#[cfg(all(feature = "inference", feature = "storage"))]
+const BATCH_CONCURRENCY: usize = 8;
+
 /// POST /api/v1/tracks/batch-embed-text
 ///
 /// Batch generate text embeddings from metadata and store them.
+/// Uses concurrent processing with bounded parallelism for better throughput.
 #[cfg(all(feature = "inference", feature = "storage"))]
 pub async fn batch_embed_text(
     State(state): State<AppState>,
     MsgPackExtractor(req): MsgPackExtractor<BatchEmbedTextRequest>,
 ) -> Result<MsgPack<BatchEmbedTextResponse>, AppError> {
+    use futures::stream::{self, StreamExt};
+
     // Validate batch size
     if req.tracks.len() > MAX_BATCH_SIZE {
         return Err(AppError::BadRequest(format!(
@@ -719,92 +737,50 @@ pub async fn batch_embed_text(
     let storage = state
         .storage
         .as_ref()
-        .ok_or_else(|| AppError::Internal("Storage not configured".to_string()))?;
+        .ok_or_else(|| AppError::Internal("Storage not configured".to_string()))?
+        .clone();
 
     let total = req.tracks.len();
-    info!(count = total, "Batch embedding and storing tracks");
+    info!(count = total, "Batch embedding and storing tracks (concurrent)");
 
-    let mut results = Vec::with_capacity(total);
-    let mut succeeded = 0;
-    let mut failed = 0;
-
-    for track in req.tracks {
-        let track_id = track.track_id.clone();
-
-        // Format metadata into text for embedding
-        let track_meta = TextTrackMetadata {
-            name: track.metadata.name.clone(),
-            artists: track.metadata.artists.clone(),
-            album: track.metadata.album.clone(),
-            genres: track.metadata.genres.clone(),
-            mood: None,
-        };
-        let text = format_track_metadata(&track_meta);
-
-        // Generate embedding using the model
-        let embedding_result = tokio::task::spawn_blocking({
+    // Process tracks concurrently with bounded parallelism
+    let results: Vec<BatchEmbedTextResult> = stream::iter(req.tracks)
+        .map(|track| {
             let model = model.clone();
-            let text = text.clone();
-            move || model.text_embedding(&text)
-        })
-        .await;
+            let storage = storage.clone();
+            async move {
+                let track_id = track.track_id.clone();
 
-        let result = match embedding_result {
-            Err(e) => {
-                error!(error = %e, track_id = %track_id, "Text embedding task panicked");
-                failed += 1;
-                BatchEmbedTextResult {
-                    track_id,
-                    success: false,
-                    error: Some(format!("Task panicked: {}", e)),
-                    text: None,
-                }
-            }
-            Ok(Err(e)) => {
-                error!(error = %e, track_id = %track_id, "Text embedding failed");
-                failed += 1;
-                BatchEmbedTextResult {
-                    track_id,
-                    success: false,
-                    error: Some(e.to_string()),
-                    text: None,
-                }
-            }
-            Ok(Ok(embedding)) => {
-                // Build storage metadata
-                let storage_metadata =
-                    TrackMetadata::new(track_id.clone(), track.metadata.name.clone())
-                        .with_artists(track.metadata.artists.clone())
-                        .with_genres(track.metadata.genres.clone());
-                let storage_metadata = if let Some(album) = track.metadata.album.clone() {
-                    storage_metadata.with_album(album)
-                } else {
-                    storage_metadata
+                // Format metadata into text for embedding
+                let track_meta = TextTrackMetadata {
+                    name: track.metadata.name.clone(),
+                    artists: track.metadata.artists.clone(),
+                    album: track.metadata.album.clone(),
+                    genres: track.metadata.genres.clone(),
+                    mood: None,
                 };
+                let text = format_track_metadata(&track_meta);
 
-                // Store the embedding
-                match storage
-                    .upsert(
-                        TEXT_COLLECTION,
-                        &track_id,
-                        embedding.data(),
-                        storage_metadata,
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        debug!(track_id = %track_id, "Text embedding stored");
-                        succeeded += 1;
+                // Generate embedding using the model
+                let embedding_result = tokio::task::spawn_blocking({
+                    let model = model.clone();
+                    let text = text.clone();
+                    move || model.text_embedding(&text)
+                })
+                .await;
+
+                match embedding_result {
+                    Err(e) => {
+                        error!(error = %e, track_id = %track_id, "Text embedding task panicked");
                         BatchEmbedTextResult {
                             track_id,
-                            success: true,
-                            error: None,
-                            text: Some(text),
+                            success: false,
+                            error: Some(format!("Task panicked: {}", e)),
+                            text: None,
                         }
                     }
-                    Err(e) => {
-                        error!(error = %e, track_id = %track_id, "Failed to store text embedding");
-                        failed += 1;
+                    Ok(Err(e)) => {
+                        error!(error = %e, track_id = %track_id, "Text embedding failed");
                         BatchEmbedTextResult {
                             track_id,
                             success: false,
@@ -812,12 +788,58 @@ pub async fn batch_embed_text(
                             text: None,
                         }
                     }
+                    Ok(Ok(embedding)) => {
+                        // Build storage metadata
+                        let storage_metadata =
+                            TrackMetadata::new(track_id.clone(), track.metadata.name.clone())
+                                .with_artists(track.metadata.artists.clone())
+                                .with_genres(track.metadata.genres.clone());
+                        let storage_metadata = if let Some(album) = track.metadata.album.clone() {
+                            storage_metadata.with_album(album)
+                        } else {
+                            storage_metadata
+                        };
+
+                        // Store the embedding
+                        match storage
+                            .upsert(
+                                TEXT_COLLECTION,
+                                &track_id,
+                                embedding.data(),
+                                storage_metadata,
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                debug!(track_id = %track_id, "Text embedding stored");
+                                BatchEmbedTextResult {
+                                    track_id,
+                                    success: true,
+                                    error: None,
+                                    text: Some(text),
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, track_id = %track_id, "Failed to store text embedding");
+                                BatchEmbedTextResult {
+                                    track_id,
+                                    success: false,
+                                    error: Some(e.to_string()),
+                                    text: None,
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        };
+        })
+        .buffer_unordered(BATCH_CONCURRENCY)
+        .collect()
+        .await;
 
-        results.push(result);
-    }
+    // Count successes and failures
+    let succeeded = results.iter().filter(|r| r.success).count();
+    let failed = total - succeeded;
 
     info!(total, succeeded, failed, "Batch embed-text complete");
 
