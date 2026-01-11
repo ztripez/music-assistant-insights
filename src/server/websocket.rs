@@ -19,6 +19,12 @@ use tracing::{debug, error, info, warn};
 use super::AppState;
 use crate::queue::{SessionMetadata, SessionRecord, SessionStatus};
 
+/// Maximum size of a single audio frame (64KB - reasonable for ~0.5s of audio)
+const MAX_FRAME_SIZE: usize = 64 * 1024;
+
+/// Maximum total file size for a session (100MB - ~10 minutes of 48kHz stereo)
+const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
+
 /// Header message sent at the start of a WebSocket audio stream
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamHeader {
@@ -184,6 +190,28 @@ async fn handle_audio_socket(socket: WebSocket, state: AppState) {
     loop {
         match receiver.next().await {
             Some(Ok(Message::Binary(data))) => {
+                // Validate frame size
+                if data.len() > MAX_FRAME_SIZE {
+                    warn!(
+                        queue_item_id = %header.queue_item_id,
+                        frame_size = data.len(),
+                        max_size = MAX_FRAME_SIZE,
+                        "Frame too large, closing session"
+                    );
+                    break;
+                }
+
+                // Check total file size limit
+                if total_bytes + data.len() as u64 > MAX_FILE_SIZE {
+                    warn!(
+                        queue_item_id = %header.queue_item_id,
+                        total_bytes,
+                        max_size = MAX_FILE_SIZE,
+                        "Session exceeded max file size, closing"
+                    );
+                    break;
+                }
+
                 // Write PCM data to file
                 if let Err(e) = file.write_all(&data).await {
                     error!(error = %e, "Failed to write PCM data");

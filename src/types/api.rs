@@ -7,6 +7,5 @@
 pub use super::embed::*;
 pub use super::models::*;
 pub use super::mood::*;
-pub use super::streaming::*;
 pub use super::taste::*;
 pub use super::tracks::*;

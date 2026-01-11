@@ -4,6 +4,7 @@
 //! processing. Sessions survive sidecar restarts and crashes.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use redb::{Database, DatabaseError, ReadableTable, ReadableTableMetadata, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -358,6 +359,46 @@ impl AudioQueue {
                             info!(path = %path.display(), "Removed orphaned PCM file");
                             cleaned += 1;
                         }
+                    }
+                }
+            }
+        }
+
+        Ok(cleaned)
+    }
+
+    /// Clean up old PCM files regardless of queue state.
+    ///
+    /// Removes any .pcm files in audio_dir older than `max_age`.
+    /// This handles edge cases like database corruption or reset.
+    pub fn cleanup_old_files(&self, max_age: Duration) -> Result<usize, QueueError> {
+        let now = SystemTime::now();
+        let mut cleaned = 0;
+
+        if let Ok(entries) = std::fs::read_dir(&self.audio_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.extension().map_or(false, |ext| ext == "pcm") {
+                    continue;
+                }
+
+                // Check file modification time
+                let should_delete = match entry.metadata() {
+                    Ok(meta) => match meta.modified() {
+                        Ok(modified) => {
+                            now.duration_since(modified).unwrap_or(Duration::ZERO) > max_age
+                        }
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                };
+
+                if should_delete {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        warn!(path = %path.display(), error = %e, "Failed to remove old PCM file");
+                    } else {
+                        info!(path = %path.display(), "Removed old PCM file");
+                        cleaned += 1;
                     }
                 }
             }

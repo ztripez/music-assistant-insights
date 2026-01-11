@@ -143,3 +143,86 @@ pub struct DeleteProfileResponse {
     /// Message
     pub message: String,
 }
+
+/// Request to analyze interaction weights (for debugging/visualization)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyzeInteractionsRequest {
+    /// List of user interactions to analyze
+    pub interactions: Vec<UserInteraction>,
+
+    /// How many days of history to consider
+    #[serde(default = "default_cutoff_days")]
+    pub cutoff_days: u32,
+}
+
+/// Response with analyzed interaction weights
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyzeInteractionsResponse {
+    /// Analyzed interactions with computed weights
+    pub interactions: Vec<AnalyzedInteraction>,
+
+    /// Summary statistics
+    pub summary: InteractionSummary,
+}
+
+/// An interaction with computed weight breakdown
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyzedInteraction {
+    /// Track ID
+    pub track_id: String,
+
+    /// Signal type (as classified)
+    pub signal_type: String,
+
+    /// Age in days since interaction
+    pub age_days: f32,
+
+    /// Base weight from signal type
+    pub base_weight: f32,
+
+    /// Time decay factor (0.0-1.0)
+    pub time_decay: f32,
+
+    /// Completion bonus (if applicable)
+    pub completion_bonus: f32,
+
+    /// Final computed weight
+    pub final_weight: f32,
+
+    /// Whether this is a positive signal
+    pub is_positive: bool,
+
+    /// Whether this interaction was within cutoff period
+    pub within_cutoff: bool,
+
+    /// Unix timestamp of the interaction
+    pub timestamp: i64,
+}
+
+/// Summary statistics for interactions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractionSummary {
+    /// Total number of interactions
+    pub total_count: u32,
+
+    /// Number within cutoff period
+    pub within_cutoff_count: u32,
+
+    /// Number of positive signals
+    pub positive_count: u32,
+
+    /// Number of negative signals
+    pub negative_count: u32,
+
+    /// Sum of positive weights
+    pub total_positive_weight: f32,
+
+    /// Sum of negative weights
+    pub total_negative_weight: f32,
+
+    /// Average age in days
+    pub average_age_days: f32,
+
+    /// Breakdown by signal type
+    pub signal_type_counts: std::collections::HashMap<String, u32>,
+}

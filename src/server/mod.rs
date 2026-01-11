@@ -5,8 +5,6 @@ mod extractors;
 mod management;
 mod mood;
 mod routes;
-#[cfg(feature = "inference")]
-mod stream;
 mod taste;
 mod tracks;
 #[cfg(feature = "watcher")]
@@ -38,11 +36,6 @@ use crate::storage::VectorStorage;
 #[cfg(feature = "watcher")]
 use crate::watcher::WatcherService;
 
-#[cfg(feature = "inference")]
-use stream::{SharedStreamManager, StreamSessionManager};
-
-#[cfg(feature = "inference")]
-pub use stream::spawn_session_cleanup_task;
 
 /// Type alias for boxed storage implementation
 #[cfg(any(feature = "storage", feature = "storage-file"))]
@@ -62,9 +55,6 @@ pub struct AppState {
     pub storage: Option<Arc<BoxedStorage>>,
     #[cfg(feature = "watcher")]
     pub watcher: Arc<RwLock<Option<WatcherService>>>,
-    /// Streaming session manager (legacy REST-based)
-    #[cfg(feature = "inference")]
-    pub stream_manager: SharedStreamManager,
     /// Mood classifier (cached prompt embeddings)
     #[cfg(feature = "inference")]
     pub mood_classifier: Arc<RwLock<Option<MoodClassifier>>>,
@@ -89,8 +79,6 @@ impl AppState {
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
             #[cfg(feature = "inference")]
-            stream_manager: Arc::new(StreamSessionManager::new()),
-            #[cfg(feature = "inference")]
             mood_classifier: Arc::new(RwLock::new(None)),
             audio_queue: None,
             started_at: Instant::now(),
@@ -110,7 +98,6 @@ impl AppState {
             storage: None,
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
-            stream_manager: Arc::new(StreamSessionManager::new()),
             mood_classifier: Arc::new(RwLock::new(None)),
             audio_queue: None,
             started_at: Instant::now(),
@@ -131,8 +118,6 @@ impl AppState {
             storage: Some(Arc::new(storage)),
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
-            #[cfg(feature = "inference")]
-            stream_manager: Arc::new(StreamSessionManager::new()),
             #[cfg(feature = "inference")]
             mood_classifier: Arc::new(RwLock::new(None)),
             audio_queue: None,
@@ -160,7 +145,6 @@ impl AppState {
             storage: Some(Arc::new(storage)),
             #[cfg(feature = "watcher")]
             watcher: Arc::new(RwLock::new(None)),
-            stream_manager: Arc::new(StreamSessionManager::new()),
             mood_classifier: Arc::new(RwLock::new(None)),
             audio_queue: None,
             started_at: Instant::now(),
@@ -296,18 +280,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/users/:user_id/recommend", post(taste::get_recommendations))
         .route("/users/:user_id/profile/vector", get(taste::get_taste_vector))
         .route("/users/:user_id/profile", delete(taste::delete_profile))
-        .route("/users/:user_id/profiles", delete(taste::delete_all_profiles));
-
-    // Streaming ingestion endpoints (when inference feature is enabled)
-    #[cfg(feature = "inference")]
-    {
-        api_routes = api_routes
-            .route("/stream/start", post(stream::start_stream))
-            .route("/stream/:session_id/frames", post(stream::stream_frames))
-            .route("/stream/:session_id/end", post(stream::end_stream))
-            .route("/stream/:session_id", delete(stream::abort_stream))
-            .route("/stream/:session_id/status", get(stream::stream_status));
-    }
+        .route("/users/:user_id/profiles", delete(taste::delete_all_profiles))
+        .route(
+            "/users/:user_id/interactions/analyze",
+            post(taste::analyze_interactions),
+        );
 
     // Watcher endpoints (when feature is enabled)
     #[cfg(feature = "watcher")]

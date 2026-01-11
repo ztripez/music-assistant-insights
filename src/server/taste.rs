@@ -7,6 +7,7 @@ use std::time::SystemTime;
 use crate::error::AppError;
 use crate::storage::{SearchFilter, AUDIO_COLLECTION, TEXT_COLLECTION};
 use crate::taste::TasteVectorComputer;
+use crate::types::taste::{AnalyzeInteractionsRequest, AnalyzeInteractionsResponse};
 use crate::types::{
     ComputeProfileRequest, ComputeProfileResponse, DeleteProfileRequest, DeleteProfileResponse,
     GetTasteVectorRequest, GetTasteVectorResponse, ProfileMetadata, ProfileType,
@@ -278,4 +279,27 @@ pub async fn delete_all_profiles(
         deleted: true,
         message: format!("Deleted all profiles for user {}", user_id),
     }))
+}
+
+/// Analyze interaction weights for debugging/visualization
+///
+/// Returns detailed weight breakdown for each interaction,
+/// showing how time decay, signal types, and completion bonuses
+/// affect the final weights used in taste profile computation.
+///
+/// POST /api/v1/users/:user_id/interactions/analyze
+pub async fn analyze_interactions(
+    Path(_user_id): Path<String>,
+    MsgPackExtractor(req): MsgPackExtractor<AnalyzeInteractionsRequest>,
+) -> Result<MsgPack<AnalyzeInteractionsResponse>, AppError> {
+    if req.interactions.is_empty() {
+        return Err(AppError::BadRequest(
+            "No interactions provided".to_string(),
+        ));
+    }
+
+    let computer = TasteVectorComputer::new();
+    let response = computer.analyze_interactions(&req.interactions, req.cutoff_days);
+
+    Ok(MsgPack(response))
 }

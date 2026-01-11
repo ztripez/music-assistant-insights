@@ -194,13 +194,24 @@ async fn main() -> anyhow::Result<()> {
                 _ => {}
             }
 
-            // Clean up orphaned PCM files
+            // Clean up orphaned PCM files (not in queue)
             match queue.cleanup_orphaned_files() {
                 Ok(count) if count > 0 => {
                     info!(count, "Cleaned up orphaned audio files");
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to clean up orphaned files");
+                }
+                _ => {}
+            }
+
+            // Clean up old PCM files (>24h, handles db corruption edge cases)
+            match queue.cleanup_old_files(std::time::Duration::from_secs(24 * 60 * 60)) {
+                Ok(count) if count > 0 => {
+                    info!(count, "Cleaned up old audio files (>24h)");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to clean up old files");
                 }
                 _ => {}
             }
@@ -227,8 +238,6 @@ async fn main() -> anyhow::Result<()> {
     // Start background tasks
     #[cfg(feature = "inference")]
     {
-        server::spawn_session_cleanup_task(state.stream_manager.clone());
-
         // Start audio processing worker if we have queue and model
         if let Some(ref queue) = state.audio_queue {
             let worker_state = Arc::new(worker::WorkerState {
