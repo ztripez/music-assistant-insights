@@ -3,13 +3,14 @@
 use anyhow::Context;
 use clap::Parser;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::signal;
 #[cfg(any(feature = "inference", feature = "storage", feature = "storage-file"))]
 use tracing::error;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use insight_sidecar::{config::AppConfig, server};
+use insight_sidecar::{config::AppConfig, queue::AudioQueue, server, worker};
 
 /// Music Assistant Insight Sidecar
 ///
@@ -167,12 +168,81 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Create app state (with optional model and storage)
-    let state = create_app_state(config.clone()).await;
+    let mut state = create_app_state(config.clone()).await;
+
+    // Initialize audio queue for WebSocket streaming
+    let data_dir = PathBuf::from(&config.storage.data_dir);
+    let queue_db_path = data_dir.join("queue.redb");
+    let audio_sessions_dir = data_dir.join("audio_sessions");
+
+    match AudioQueue::new(&queue_db_path, &audio_sessions_dir) {
+        Ok(queue) => {
+            info!(
+                queue_db = %queue_db_path.display(),
+                audio_dir = %audio_sessions_dir.display(),
+                "Audio queue initialized"
+            );
+
+            // Startup recovery: reset any "Processing" sessions to "Pending"
+            match queue.reset_processing_to_pending() {
+                Ok(count) if count > 0 => {
+                    info!(count, "Reset interrupted sessions to pending");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to reset processing sessions");
+                }
+                _ => {}
+            }
+
+            // Clean up orphaned PCM files
+            match queue.cleanup_orphaned_files() {
+                Ok(count) if count > 0 => {
+                    info!(count, "Cleaned up orphaned audio files");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to clean up orphaned files");
+                }
+                _ => {}
+            }
+
+            // Report pending sessions
+            match queue.list_pending() {
+                Ok(pending) if !pending.is_empty() => {
+                    info!(count = pending.len(), "Pending audio sessions to process");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to list pending sessions");
+                }
+                _ => {}
+            }
+
+            // Attach queue to state
+            state = state.with_audio_queue(queue);
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to initialize audio queue, WebSocket streaming disabled");
+        }
+    }
 
     // Start background tasks
     #[cfg(feature = "inference")]
     {
         server::spawn_session_cleanup_task(state.stream_manager.clone());
+
+        // Start audio processing worker if we have queue and model
+        if let Some(ref queue) = state.audio_queue {
+            let worker_state = Arc::new(worker::WorkerState {
+                queue: queue.clone(),
+                model: state.model.clone(),
+                #[cfg(any(feature = "storage", feature = "storage-file"))]
+                storage: state.storage.clone(),
+                config: worker::WorkerConfig::default(),
+            });
+
+            let _worker_handle = worker::spawn_worker(worker_state);
+            info!("Audio processing worker started");
+            // Note: worker_handle could be stored for graceful shutdown
+        }
     }
 
     // Create router

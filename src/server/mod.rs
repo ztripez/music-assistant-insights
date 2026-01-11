@@ -11,6 +11,7 @@ mod taste;
 mod tracks;
 #[cfg(feature = "watcher")]
 mod watcher;
+mod websocket;
 
 use axum::{
     routing::{delete, get, post},
@@ -23,6 +24,7 @@ use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 
 use crate::config::AppConfig;
+use crate::queue::AudioQueue;
 
 #[cfg(feature = "inference")]
 use crate::inference::{ClapModel, DownloadManager};
@@ -60,12 +62,14 @@ pub struct AppState {
     pub storage: Option<Arc<BoxedStorage>>,
     #[cfg(feature = "watcher")]
     pub watcher: Arc<RwLock<Option<WatcherService>>>,
-    /// Streaming session manager
+    /// Streaming session manager (legacy REST-based)
     #[cfg(feature = "inference")]
     pub stream_manager: SharedStreamManager,
     /// Mood classifier (cached prompt embeddings)
     #[cfg(feature = "inference")]
     pub mood_classifier: Arc<RwLock<Option<MoodClassifier>>>,
+    /// Audio queue for WebSocket streaming (crash-resistant)
+    pub audio_queue: Option<Arc<AudioQueue>>,
     /// Server start time for uptime calculation
     pub started_at: Instant,
 }
@@ -88,6 +92,7 @@ impl AppState {
             stream_manager: Arc::new(StreamSessionManager::new()),
             #[cfg(feature = "inference")]
             mood_classifier: Arc::new(RwLock::new(None)),
+            audio_queue: None,
             started_at: Instant::now(),
         }
     }
@@ -107,6 +112,7 @@ impl AppState {
             watcher: Arc::new(RwLock::new(None)),
             stream_manager: Arc::new(StreamSessionManager::new()),
             mood_classifier: Arc::new(RwLock::new(None)),
+            audio_queue: None,
             started_at: Instant::now(),
         }
     }
@@ -129,6 +135,7 @@ impl AppState {
             stream_manager: Arc::new(StreamSessionManager::new()),
             #[cfg(feature = "inference")]
             mood_classifier: Arc::new(RwLock::new(None)),
+            audio_queue: None,
             started_at: Instant::now(),
         }
     }
@@ -155,8 +162,15 @@ impl AppState {
             watcher: Arc::new(RwLock::new(None)),
             stream_manager: Arc::new(StreamSessionManager::new()),
             mood_classifier: Arc::new(RwLock::new(None)),
+            audio_queue: None,
             started_at: Instant::now(),
         }
+    }
+
+    /// Set the audio queue for WebSocket streaming
+    pub fn with_audio_queue(mut self, queue: AudioQueue) -> Self {
+        self.audio_queue = Some(Arc::new(queue));
+        self
     }
 
     /// Check if a model is loaded
@@ -311,6 +325,9 @@ pub fn create_router(state: AppState) -> Router {
             )
             .route("/watcher/folders/:path", delete(watcher::remove_folder));
     }
+
+    // WebSocket audio streaming endpoint
+    api_routes = api_routes.route("/ws/audio", get(websocket::audio_stream_handler));
 
     Router::new()
         .nest("/api/v1", api_routes)

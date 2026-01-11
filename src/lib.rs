@@ -10,12 +10,14 @@ pub mod error;
 pub mod inference;
 pub mod math;
 pub mod mood;
+pub mod queue;
 pub mod server;
 pub mod storage;
 pub mod taste;
 pub mod types;
 #[cfg(feature = "watcher")]
 pub mod watcher;
+pub mod worker;
 
 pub use config::{AppConfig, StorageMode};
 pub use error::{AppError, Result};
