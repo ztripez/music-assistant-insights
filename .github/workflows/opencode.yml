@@ -1,0 +1,58 @@
+name: opencode
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  opencode:
+    if: |
+      (
+        github.event_name == 'issue_comment' &&
+        (
+          contains(github.event.comment.body, '/oc') ||
+          contains(github.event.comment.body, '/opencode')
+        )
+      ) ||
+      (
+        github.event_name == 'pull_request_review_comment' &&
+        (
+          contains(github.event.comment.body, '/oc') ||
+          contains(github.event.comment.body, '/opencode')
+        )
+      ) ||
+      (
+        github.event_name == 'issues' &&
+        github.event.label.name == 'opencode:act'
+      ) ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.label.name == 'opencode:act'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run opencode
+        uses: sst/opencode/github@latest
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          model: ${{ vars.OPENCODE_MODEL || 'openai/gpt-5.5' }}
+          share: false
